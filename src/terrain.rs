@@ -121,6 +121,19 @@ pub fn look(theme: Theme, team: Option<Team>) -> Look {
             neon: [v(1.0, 0.8, 0.05), v(0.05, 0.9, 1.0)],
             contour_every: 12.0,
         },
+        Theme::HollowReach => Look {
+            low: v(0.025, 0.015, 0.045),
+            high: v(0.05, 0.03, 0.07),
+            rock: v(0.03, 0.018, 0.045),
+            contour: v(0.1, 0.9, 0.85),
+            grid: v(0.9, 0.1, 0.7),
+            horizon: v(0.35, 0.1, 0.6),
+            zenith: v(0.03, 0.0, 0.1),
+            water: v(0.01, 0.01, 0.04),
+            sun: v(0.7, 0.6, 1.0),
+            neon: [v(0.1, 1.0, 0.85), v(1.0, 0.15, 0.75)],
+            contour_every: 9.0,
+        },
         Theme::Haven => {
             let t = team_color(team);
             Look {
@@ -206,8 +219,11 @@ fn day_night(
     mut accents: ResMut<Assets<AccentMaterial>>,
     mut fog: Query<&mut DistanceFog>,
     mut spots: Query<(&crate::bases::Lamp, &mut SpotLight), Without<PointLight>>,
+    cave: Option<Res<crate::caves::CaveCover>>,
 ) {
     let Some(sky) = sky else { return };
+    // Under a cave's roof: the sky's light shut out (the neon glows on).
+    let under = cave.map_or(0.0, |c| c.0);
     let lk = sky.look;
     let d = daylight(game.day);
     let night = 1.0 - d;
@@ -220,11 +236,11 @@ fn day_night(
         *t = Transform::from_translation(dir).looking_at(Vec3::ZERO, Vec3::Y);
         let col = Vec3::new(0.35, 0.45, 0.9).lerp(lk.sun, d);
         l.color = Color::linear_rgb(col.x, col.y, col.z);
-        l.illuminance = 700.0 + 5050.0 * d;
+        l.illuminance = (700.0 + 5050.0 * d) * (1.0 - 0.8 * under);
     }
     let amb = Vec3::new(0.25, 0.3, 0.6).lerp(lk.horizon * 0.5 + Vec3::new(0.3, 0.3, 0.4), d);
     ambient.color = Color::linear_rgb(amb.x, amb.y, amb.z);
-    ambient.brightness = 90.0 + 85.0 * d;
+    ambient.brightness = (90.0 + 85.0 * d) * (1.0 - 0.45 * under);
     if let Some(mut m) = accents.get_mut(&sky.material) {
         m.neon.color.w = 0.12 + 0.88 * d;
     }
@@ -313,6 +329,8 @@ fn build(
         },
     });
     let t = &map.terrain;
+    // (In the caves: darker under the roofs.)
+    let covered = crate::caves::cover_grid(&map);
     let chunks = (N - 1) / CHUNK;
     for cz in 0..chunks {
         for cx in 0..chunks {
@@ -325,7 +343,7 @@ fn build(
             for (step, fine) in [(1usize, true), (4usize, false)] {
                 // (Only the fine meshes, seen up close, leave out the cells over the holes.)
                 let holes: &[(Vec2, Vec2)] = if fine { &map.world.holes } else { &[] };
-                let mesh = chunk_mesh(t, &lk, i0, j0, step, holes);
+                let mesh = chunk_mesh(t, &lk, i0, j0, step, holes, covered.as_deref());
                 commands.spawn((
                     ContinentPart,
                     Chunk { center: mid, fine },
@@ -441,6 +459,14 @@ fn build(
         &mut std,
         &mut accents,
     );
+    crate::caves::spawn(
+        &mut commands,
+        &map,
+        &lk,
+        &mut meshes,
+        &mut std,
+        &mut accents,
+    );
     info!(
         "on {} ({}): {} bases, {} gates, {} scenery pieces",
         map.def.name,
@@ -461,6 +487,7 @@ fn chunk_mesh(
     j0: usize,
     step: usize,
     holes: &[(Vec2, Vec2)],
+    covered: Option<&[f32]>,
 ) -> Mesh {
     let n = CHUNK / step + 1;
     let mut m = MeshData::default();
@@ -490,7 +517,14 @@ fn chunk_mesh(
             m.pos.push([x, y, z]);
             m.nrm.push(nrm.to_array());
             m.uv.push([x / 64.0, z / 64.0]);
-            m.col.push(color(x, y, z, nrm, t.road_at(i, j)));
+            let mut c = color(x, y, z, nrm, t.road_at(i, j));
+            if let Some(cov) = covered {
+                let k = 1.0 - 0.7 * cov[j as usize * N + i as usize];
+                for v in &mut c[..3] {
+                    *v *= k;
+                }
+            }
+            m.col.push(c);
         }
     }
     for b in 0..n - 1 {

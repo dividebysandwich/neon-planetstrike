@@ -19,6 +19,9 @@ pub enum Theme {
     CircuitMesa,
     /// A faction's sanctuary: a calm plateau with neat trees and lamps.
     Haven,
+    /// Canyon caves: a rock plateau cut by roofed canyons along the roads, the bases in
+    /// sinkholes; crystals and fungi glowing in the dark (`crate::caves`).
+    HollowReach,
 }
 
 /// How a theme shapes its land (metres).
@@ -124,14 +127,20 @@ const fn s(kind: SceneryKind, per_ha: f32, lo: f32, hi: f32, clump: f32) -> Scat
 }
 
 impl Theme {
-    pub const CONTESTED: [Theme; 6] = [
+    pub const CONTESTED: [Theme; 7] = [
         Theme::SynthDunes,
         Theme::NeonJungle,
         Theme::Glacier,
         Theme::Ember,
         Theme::FungalMarsh,
         Theme::CircuitMesa,
+        Theme::HollowReach,
     ];
+
+    /// Whether its land is canyon caves (`crate::caves`).
+    pub fn caves(self) -> bool {
+        self == Theme::HollowReach
+    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -142,6 +151,7 @@ impl Theme {
             Theme::FungalMarsh => "Fungal Marsh",
             Theme::CircuitMesa => "Circuit Mesa",
             Theme::Haven => "Sanctuary",
+            Theme::HollowReach => "Hollow Reach",
         }
     }
 
@@ -231,6 +241,14 @@ impl Theme {
                 base: 8.0,
                 ..base
             },
+            // (Gentle land: the canyons and the plateau over them come after, `caves::raise`.)
+            Theme::HollowReach => TerrainStyle {
+                hill_amp: 12.0,
+                hill_scale: 600.0,
+                warp: 200.0,
+                base: 6.0,
+                ..base
+            },
         }
     }
 
@@ -298,6 +316,18 @@ impl Theme {
                     s(Tree, 1.5, 0.8, 1.3, 0.5),
                     s(Shrub, 4.0, 0.6, 1.3, 0.5),
                     s(Grass, 4.0, 0.6, 1.2, 0.5),
+                ];
+                L
+            }
+            // (Low enough to stand under the caves' roofs.)
+            Theme::HollowReach => {
+                const L: &[Scatter] = &[
+                    s(Crystal, 0.8, 0.6, 1.5, 0.8),
+                    s(Mushroom, 0.4, 0.5, 1.0, 0.7),
+                    s(Toadstool, 3.0, 0.5, 1.3, 0.7),
+                    s(Boulder, 0.15, 0.6, 1.3, 0.3),
+                    s(Rock, 0.6, 0.6, 1.5, 0.3),
+                    s(Vent, 0.3, 0.6, 1.4, 0.6),
                 ];
                 L
             }

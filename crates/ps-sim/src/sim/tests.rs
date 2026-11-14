@@ -7,14 +7,25 @@ use crate::worldgen::{WorldDef, WorldParams};
 use crate::{Hand, Pose, VrInput};
 
 fn setup() -> (WorldDef, WorldState, ContinentSim) {
+    setup_on(false)
+}
+
+/// A front continent of world 11: the first (on the open land, as it was before the caves),
+/// or the caves.
+fn setup_on(caves: bool) -> (WorldDef, WorldState, ContinentSim) {
     let def = WorldDef::generate(WorldParams {
         seed: 11,
         contested: 6,
     });
+    let def = if caves { def } else { def.without_caves() };
     let st = WorldState::initial(&def);
     // A front: a continent someone holds, next to someone else's.
     let c = (3..def.continents.len() as u8)
-        .find(|&c| st.continents[c as usize].owner.is_some() && st.contested(&def, c))
+        .find(|&c| {
+            st.continents[c as usize].owner.is_some()
+                && st.contested(&def, c)
+                && (!caves || def.continents[c as usize].theme.caves())
+        })
         .unwrap();
     let map = Arc::new(ContinentMap::build(
         Arc::new(def.continents[c as usize].clone()),
@@ -257,9 +268,31 @@ fn bots_fight_and_hack() {
     );
 }
 
+#[test]
+fn bots_fight_and_take_bases_in_the_caves() {
+    let mut tries = Vec::new();
+    // (Longer: everything is along the canyons.)
+    for s in 1..4 {
+        let r = battle_on(s, true, 900);
+        tries.push(r);
+        if r.2 > 0 {
+            break;
+        }
+    }
+    assert!(tries.iter().all(|r| r.1 > 0), "bots fought: {tries:?}");
+    assert!(
+        tries.iter().any(|r| r.2 > 0),
+        "bots took something: {tries:?}"
+    );
+}
+
 /// Seven minutes of bots fighting over a continent: the vehicles they took, kills, hacks.
 fn battle(seed: u64) -> (usize, usize, usize) {
-    let (def, mut st, mut sim) = setup();
+    battle_on(seed, false, 420)
+}
+
+fn battle_on(seed: u64, caves: bool, secs: u64) -> (usize, usize, usize) {
+    let (def, mut st, mut sim) = setup_on(caves);
     let factions = st.factions_on(&def, sim.id);
     assert!(factions.len() >= 2, "{factions:?}");
     let mut bots = Bots::new(0.6, seed);
@@ -280,7 +313,7 @@ fn battle(seed: u64) -> (usize, usize, usize) {
     let mut shots: std::collections::BTreeMap<String, u32> = Default::default();
     let mut shot_ids = std::collections::HashSet::new();
     let start = std::time::Instant::now();
-    for tick in 0..60 * 420 {
+    for tick in 0..60 * secs {
         bots.think(&mut sim);
         sim.step();
         for o in sim.out.drain(..) {
@@ -329,7 +362,7 @@ fn battle(seed: u64) -> (usize, usize, usize) {
             sync(&def, &st, &mut sim);
         }
     }
-    let per_tick = start.elapsed().as_secs_f64() / (60.0 * 420.0) * 1000.0;
+    let per_tick = start.elapsed().as_secs_f64() / (60.0 * secs as f64) * 1000.0;
     println!(
         "kills {kills}, hacks {hacks}, vehicles {}, buses deployed {deployed}, wrecks {wrecks}, \
          VTOL height {flown:.0} m, crewed ticks {crewed}, driven {far_driven:.0} m, {per_tick:.3} ms/tick",

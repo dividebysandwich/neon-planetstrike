@@ -472,13 +472,23 @@ mod tests {
     use crate::theme::Theme;
     use crate::worldgen::{ContinentDef, WorldDef, WorldParams};
 
-    /// A continent of each contested theme.
+    /// A continent of each contested theme (the caves' own, and the open land's as it was).
     fn continents(seed: u64) -> Vec<ContinentDef> {
         let w = WorldDef::generate(WorldParams { seed, contested: 6 });
+        let caves = w
+            .continents
+            .iter()
+            .find(|c| c.theme.caves())
+            .unwrap()
+            .clone();
+        let open = w.without_caves();
         Theme::CONTESTED
             .iter()
             .map(|th| {
-                w.continents
+                if th.caves() {
+                    return caves.clone();
+                }
+                open.continents
                     .iter()
                     .find(|c| c.theme == *th)
                     .expect("each theme")
@@ -519,7 +529,7 @@ mod tests {
     fn roads_are_gentle_and_flat() {
         for def in continents(1).into_iter().chain(continents(2)) {
             let t = def.terrain();
-            assert_eq!(t.roads.len(), def.lattice.len(), "{:?}", def.theme);
+            assert_eq!(t.roads.len(), def.road_links().len(), "{:?}", def.theme);
             let (mut worst_grade, mut worst_dip, mut worst_slope) = (0.0f32, 0.0f32, 0.0f32);
             for r in &t.roads {
                 for w in r.points.windows(2) {

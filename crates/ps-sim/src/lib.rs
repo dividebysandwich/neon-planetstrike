@@ -7,6 +7,7 @@ pub mod avatar;
 pub mod base;
 pub mod bots;
 pub mod capture;
+pub mod caves;
 pub mod collide;
 pub mod construct;
 pub mod events;

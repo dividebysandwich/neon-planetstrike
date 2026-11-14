@@ -270,13 +270,41 @@ impl ContinentDef {
             let l = |(a, b): (Node, Node)| self.node_pos(a).distance(self.node_pos(b));
             l(*x).total_cmp(&l(*y))
         });
-        links
+        let mut out: Vec<RoadLink> = links
             .into_iter()
             .map(|(a, b)| RoadLink {
                 a: end(a, self.node_pos(b)),
                 b: end(b, self.node_pos(a)),
             })
-            .collect()
+            .collect();
+        // In the caves the towers stand in pits: a road from each one's door to its base.
+        if self.theme.caves() {
+            for (t, site) in self.bases.iter().enumerate() {
+                if site.kind != BaseKind::Tower {
+                    continue;
+                }
+                let Some(parent) = (0..self.bases.len())
+                    .filter(|&b| self.bases[b].kind != BaseKind::Tower)
+                    .min_by(|&a, &b| {
+                        let d = |i: usize| self.bases[i].pos.distance(site.pos);
+                        d(a).total_cmp(&d(b))
+                    })
+                else {
+                    continue;
+                };
+                let door = Vec2::new(-site.facing.sin(), -site.facing.cos());
+                let at = site.pos + door * (crate::base::TOWER_HALF + 2.0);
+                out.push(RoadLink {
+                    a: RoadEnd {
+                        at,
+                        out: door,
+                        reach: pads[t].radius + 12.0 - (crate::base::TOWER_HALF + 2.0),
+                    },
+                    b: end(Node::Base(parent as BaseIdx), site.pos),
+                });
+            }
+        }
+        out
     }
 
     /// The continent's land (a second or so of work).
@@ -479,11 +507,17 @@ impl WorldDef {
             names.swap(i, j);
         }
         // Themes: each contested theme used in turn (shuffled), so neighbours differ.
-        let mut themes = Theme::CONTESTED.to_vec();
+        let mut themes: Vec<Theme> = Theme::CONTESTED
+            .into_iter()
+            .filter(|t| !t.caves())
+            .collect();
         for i in (1..themes.len()).rev() {
             let j = rng.int(0, i as i32 + 1) as usize;
             themes.swap(i, j);
         }
+        // One contested continent is the caves instead (they came later: chosen from their own
+        // stream, so the rest of the world stays as it was).
+        let caves = 3 + Seq::new(params.seed, 0xca7e).int(0, contested as i32) as usize;
         let mut continents: Vec<ContinentDef> = (0..n)
             .map(|i| {
                 let sanctuary = (i < 3).then(|| Team::ALL[i]);
@@ -495,6 +529,8 @@ impl WorldDef {
                     },
                     theme: if i < 3 {
                         Theme::Haven
+                    } else if i == caves {
+                        Theme::HollowReach
                     } else {
                         themes[(i - 3) % themes.len()]
                     },
@@ -677,6 +713,33 @@ impl WorldDef {
             assign_capture(c, params.seed);
         }
         WorldDef { params, continents }
+    }
+
+    /// The world as it was before the caves: the cave continent with the theme it had
+    /// (tests made for the open land use it).
+    pub fn without_caves(mut self) -> WorldDef {
+        let n = self.continents.len();
+        for i in 3..n {
+            if !self.continents[i].theme.caves() {
+                continue;
+            }
+            // The themes go round in sixes: another continent's in its place, or the one
+            // missing.
+            let theme = (3..n)
+                .filter(|&j| j != i && (j - 3) % 6 == (i - 3) % 6)
+                .map(|j| self.continents[j].theme)
+                .next()
+                .or_else(|| {
+                    Theme::CONTESTED
+                        .into_iter()
+                        .filter(|t| !t.caves())
+                        .find(|t| self.continents.iter().all(|c| c.theme != *t))
+                });
+            if let Some(t) = theme {
+                self.continents[i].theme = t;
+            }
+        }
+        self
     }
 
     pub fn sanctuary(&self, team: Team) -> &ContinentDef {

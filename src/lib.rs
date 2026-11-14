@@ -18,6 +18,7 @@ pub mod assets;
 pub mod audio;
 pub mod bases;
 pub mod build;
+pub mod caves;
 pub mod chat;
 pub mod deploy;
 pub mod desktop;
@@ -429,6 +430,7 @@ pub fn run() {
         audio::SoundPlugin,
     ))
     .add_plugins((
+        caves::CavesPlugin,
         squad::SquadMarksPlugin,
         deploy::DeployPlugin,
         login::LoginPlugin,

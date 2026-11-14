@@ -82,19 +82,22 @@ impl Nav {
                 height[k] = land.max(water);
                 wet[k] = water > land + 0.5;
                 // Something tall over the ground anywhere in it (sampled every 3 m: walls are
-                // 4 m thick): blocked; but not a high roof overhead (a cave's), only what
-                // stands on the ground or tops out low (buildings' floors and roofs).
+                // 4 m thick): blocked; what stands on the ground, and the buildings' floors
+                // and roofs over it, but not a cave's roof high overhead.
                 const AT: [f32; 5] = [-6.0, -3.0, 0.0, 3.0, 6.0];
+                let low = height[k] + 12.0;
                 let tall = AT
                     .iter()
                     .flat_map(|x| AT.iter().map(|z| Vec2::new(*x, *z)))
                     .any(|o| {
                         let p = c + o;
                         let g = t.surface(p.x, p.y);
-                        world
-                            .ground(p.x, p.y, g + 16.0)
-                            .is_some_and(|top| top > g + 2.5)
-                            || world.occupied(p.x, p.y, g + 2.5, g + 2.5)
+                        world.near_colliders(p, p).iter().any(|col| {
+                            let (lo, _) = col.bounds();
+                            col.top_at(p.x, p.y).is_some_and(|top| {
+                                top > g + 2.5 && (lo.y < g + 2.5 || (top <= g + 16.0 && lo.y < low))
+                            })
+                        })
                     });
                 blocked[k] = tall;
             }
@@ -357,9 +360,9 @@ mod tests {
         let def = WorldDef::generate(WorldParams {
             seed: 11,
             contested: 4,
-        });
-        let c = Arc::new(def.continents[3].clone());
-        let map = ContinentMap::build(c, false);
+        })
+        .without_caves();
+        let map = ContinentMap::build(Arc::new(def.continents[3].clone()), false);
         let nav = Nav::build(&map, &map.world);
         // From outside one base to outside another, on wheels.
         let a = map.bases[1].center + Vec3::new(map.bases[1].half + 40.0, 0.0, 0.0);
@@ -379,29 +382,24 @@ mod tests {
     #[test]
     fn ground_vehicles_reach_along_the_lattice_on_every_theme() {
         use crate::theme::Theme;
-        use crate::worldgen::Node;
-        let w = WorldDef::generate(WorldParams {
-            seed: 21,
-            contested: 6,
-        });
         for theme in Theme::CONTESTED {
-            let def = w.continents.iter().find(|c| c.theme == theme).unwrap();
+            let def = (21..60)
+                .find_map(|seed| {
+                    let w = WorldDef::generate(WorldParams { seed, contested: 6 });
+                    w.continents.into_iter().find(|c| c.theme == theme)
+                })
+                .unwrap();
             let map = ContinentMap::build(Arc::new(def.clone()), false);
             let nav = Nav::build(&map, &map.world);
-            // Just outside each end of each link (a base's gateway, a gate's pad).
-            let outside = |n: Node, to: Vec2| -> Vec3 {
-                let p = def.node_pos(n);
-                let r = match n {
-                    Node::Base(b) => def.bases[b as usize].pad_radius() + 20.0,
-                    Node::Gate(_) => crate::worldgen::GATE_PAD + 20.0,
-                };
-                let q = p + (to - p).normalize() * r;
+            // From where each road leaves its pad to where it comes to the other (a base's
+            // gateway, a gate's pad, a tower's door).
+            let off = |e: &crate::roads::RoadEnd| -> Vec3 {
+                let q = e.at + e.out * e.reach;
                 Vec3::new(q.x, map.terrain.surface(q.x, q.y), q.y)
             };
-            for &(a, b) in &def.lattice {
-                let (pa, pb) = (def.node_pos(a), def.node_pos(b));
-                let route = nav.route(outside(a, pb), outside(b, pa), GROUND_VEHICLE);
-                assert!(route.is_some(), "{theme:?}: no way from {a:?} to {b:?}");
+            for (i, l) in def.road_links().iter().enumerate() {
+                let route = nav.route(off(&l.a), off(&l.b), GROUND_VEHICLE);
+                assert!(route.is_some(), "{theme:?}: no way along road {i}");
             }
         }
     }

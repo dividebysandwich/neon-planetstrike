@@ -20,6 +20,8 @@ pub struct ContinentMap {
     pub bases: Vec<BaseLayout>,
     /// Each gate's middle, on its pad.
     pub gates: Vec<Vec3>,
+    /// Its caves' roofs (canyon cave continents).
+    pub caves: crate::caves::Caves,
     pub world: World,
 }
 
@@ -55,6 +57,8 @@ impl ContinentMap {
         for g in &gates {
             colliders.extend(base::gate_colliders(*g));
         }
+        let caves = crate::caves::build(&def, &terrain, &bases);
+        colliders.extend(caves.roofs.iter().copied());
         let mut world = World::new(colliders, Some(terrain.clone()));
         for b in &bases {
             world.holes.extend(b.holes.iter().copied());
@@ -70,6 +74,7 @@ impl ContinentMap {
             scenery,
             bases,
             gates,
+            caves,
             world,
         }
     }

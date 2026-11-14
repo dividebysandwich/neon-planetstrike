@@ -74,6 +74,8 @@ fn features(theme: Theme) -> (usize, (f32, f32), (f32, f32), usize, (f32, f32)) 
         Theme::SynthDunes => (2, (300.0, 450.0), (80.0, 140.0), 1, (50.0, 80.0)),
         Theme::FungalMarsh => (1, (250.0, 350.0), (60.0, 110.0), 7, (60.0, 160.0)),
         Theme::Haven => (2, (300.0, 400.0), (100.0, 160.0), 2, (60.0, 110.0)),
+        // (No lakes: the plateau would swallow them.)
+        Theme::HollowReach => (2, (220.0, 320.0), (40.0, 80.0), 0, (60.0, 100.0)),
     }
 }
 
@@ -300,6 +302,9 @@ impl Terrain {
         let (roads, near) = roads::build(&mut t, pads, links);
         t.roads = roads;
         t.road_near = near;
+        if theme.caves() {
+            crate::caves::raise(&mut t, pads, seed);
+        }
         t
     }
 

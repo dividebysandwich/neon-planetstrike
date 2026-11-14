@@ -10,7 +10,8 @@ use crate::{SimEvent, snapshot::Fx, weapons::Ammo};
 
 /// A front continent with its bases' state from the world's.
 fn setup(seed: u64) -> (WorldDef, WorldState, ContinentSim) {
-    let def = WorldDef::generate(WorldParams { seed, contested: 6 });
+    // (On the open land these were made for.)
+    let def = WorldDef::generate(WorldParams { seed, contested: 6 }).without_caves();
     let st = WorldState::initial(&def);
     let c = (3..def.continents.len() as u8)
         .find(|&c| st.continents[c as usize].owner.is_some() && st.contested(&def, c))
