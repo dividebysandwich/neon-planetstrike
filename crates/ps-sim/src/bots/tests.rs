@@ -728,3 +728,99 @@ fn bots_in_a_humans_squad_go_to_its_waypoint() {
     let d = (sim.player(50).unwrap().feet() - way).length();
     assert!(d < 35.0, "at the waypoint: {d} m off");
 }
+
+#[test]
+fn bots_take_capture_points_and_defenders_go_to_them() {
+    // A capture point base someone may take, its turrets down.
+    let mut found = None;
+    'search: for seed in 0..40 {
+        let def = WorldDef::generate(WorldParams { seed, contested: 6 });
+        let st = WorldState::initial(&def);
+        for cd in &def.continents {
+            for (b, site) in cd.bases.iter().enumerate() {
+                let b = b as BaseIdx;
+                let owner = st.base(cd.id, b).owner;
+                if site.capture != crate::worldgen::Capture::Points || owner.is_none() {
+                    continue;
+                }
+                if let Some(t) = Team::ALL
+                    .into_iter()
+                    .find(|&t| st.can_hack(&def, cd.id, b, t))
+                {
+                    found = Some((def.clone(), st.clone(), cd.id, b, owner.unwrap(), t));
+                    break 'search;
+                }
+            }
+        }
+    }
+    let (def, st, c, b, owner, enemy) = found.expect("a capture point base");
+    let map = Arc::new(ContinentMap::build(
+        Arc::new(def.continents[c as usize].clone()),
+        false,
+    ));
+    let mut sim = ContinentSim::new(c, map);
+    sync(&def, &st, &mut sim);
+    // Nothing else to take; nobody shooting.
+    for o in 0..sim.bases.len() {
+        if o != b as usize {
+            sim.bases[o].hackable = [false; 3];
+        }
+    }
+    sim.bases[b as usize].generator = 0.0;
+    let l = sim.map.bases[b as usize].clone();
+    let mut bots = Bots::new(0.6, 5);
+    for i in 0..4 {
+        let id = 60 + i;
+        bots.add(&mut sim, id, enemy);
+        let out = l.points[0].path[0] + Vec3::new(i as f32 * 2.0, 0.0, 0.0);
+        sim.spawn_at(id, out, 0.0);
+    }
+    let mut took = None;
+    for tick in 0..60 * 240 {
+        bots.think(&mut sim);
+        sim.step();
+        for (base, t) in std::mem::take(&mut sim.majority) {
+            if base == b && t.is_some() {
+                took = Some(tick as f32 / 60.0);
+            }
+        }
+        if took.is_some() {
+            break;
+        }
+    }
+    let took = took.unwrap_or_else(|| {
+        let at: Vec<String> = bots
+            .bots
+            .iter()
+            .map(|bot| {
+                format!(
+                    "{:?} {}",
+                    bot.goal,
+                    sim.player(bot.id).unwrap().feet() - l.center
+                )
+            })
+            .collect();
+        panic!(
+            "no majority: points {:?}, bots {at:?}",
+            sim.bases[b as usize].points
+        )
+    });
+    println!("two points taken in {took:.0} s");
+    // The owners' bots, there now, mostly go for the points the enemy holds.
+    let mut defenders = Bots::new(0.6, 6);
+    for i in 0..6 {
+        let id = 90 + i;
+        defenders.add(&mut sim, id, owner);
+        sim.spawn_at(id, l.center + Vec3::new(i as f32, 0.0, -40.0), 0.0);
+    }
+    defenders.think(&mut sim);
+    let goals: Vec<Option<Goal>> = defenders.bots.iter().map(|b| b.goal).collect();
+    let to_points = goals
+        .iter()
+        .filter(|g| {
+            matches!(g, Some(Goal::Point(g, i))
+                if *g == b && sim.bases[b as usize].points[*i as usize].owner == Some(enemy))
+        })
+        .count();
+    assert!(to_points >= 2, "{goals:?}");
+}

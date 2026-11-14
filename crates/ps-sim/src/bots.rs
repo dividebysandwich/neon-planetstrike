@@ -41,6 +41,8 @@ enum Goal {
     Console(BaseIdx),
     /// Stay near a base (holding a hack, guarding).
     Hold(BaseIdx),
+    /// Go and stand on a base's capture point (to take it, or to hold it).
+    Point(BaseIdx, u8),
     /// Walk somewhere.
     Go(Vec3),
 }
@@ -482,7 +484,9 @@ fn spawn(bot: &mut Bot, me: &Player, sim: &mut ContinentSim, rng: &mut Seq) {
         } else {
             // Near the squad's goal, else near what there is to take.
             let squad = match bot.squad_goal {
-                Some(Goal::Console(b) | Goal::Hold(b)) => vec![sim.map.bases[b as usize].center],
+                Some(Goal::Console(b) | Goal::Hold(b) | Goal::Point(b, _)) => {
+                    vec![sim.map.bases[b as usize].center]
+                }
                 Some(Goal::Go(p)) => vec![p],
                 None => Vec::new(),
             };
@@ -548,7 +552,8 @@ fn spawn(bot: &mut Bot, me: &Player, sim: &mut ContinentSim, rng: &mut Seq) {
         let driving = bot_vehicles(sim, me.team);
         if driving < MAX_BOT_VEHICLES
             && rng.chance(0.3)
-            && sim.map.bases[best as usize].console.is_some()
+            && (sim.map.bases[best as usize].console.is_some()
+                || !sim.map.bases[best as usize].points.is_empty())
         {
             // AAA more often when enemy aircraft are about.
             let air = sim
@@ -1268,9 +1273,53 @@ fn hack_targets(sim: &ContinentSim, team: Team) -> Vec<BaseIdx> {
         .iter()
         .enumerate()
         .filter(|(_, b)| b.hackable[team.index()] && b.hack.is_none_or(|h| h.team != team))
-        .filter(|(i, _)| sim.map.bases[*i].console.is_some())
+        .filter(|(i, _)| {
+            sim.map.bases[*i].console.is_some() || !sim.map.bases[*i].points.is_empty()
+        })
         .map(|(i, _)| i as BaseIdx)
         .collect()
+}
+
+/// Which of base `b`'s capture points a bot of `team` at `pos` goes for: one its faction
+/// doesn't hold (the nearest; every third bot the next), else one being taken from it, else
+/// the nearest.
+fn pick_point(sim: &ContinentSim, b: BaseIdx, team: Team, pos: Vec3, id: PlayerId) -> u8 {
+    let rt = &sim.bases[b as usize];
+    let at = &sim.map.bases[b as usize].points;
+    let mut cand: Vec<usize> = (0..rt.points.len())
+        .filter(|&i| rt.points[i].owner != Some(team))
+        .collect();
+    if cand.is_empty() {
+        cand = (0..rt.points.len())
+            .filter(|&i| rt.points[i].by.is_some_and(|t| t != team))
+            .collect();
+    }
+    if cand.is_empty() {
+        cand = (0..rt.points.len()).collect();
+    }
+    cand.sort_by(|&a, &c| {
+        (at[a].pos - pos)
+            .length()
+            .total_cmp(&(at[c].pos - pos).length())
+    });
+    let k = if cand.len() > 1 && id % 3 == 2 { 1 } else { 0 };
+    cand.get(k).map_or(0, |&i| i as u8)
+}
+
+/// Going to take (or save) base `b`: its console, or one of its capture points.
+fn take(sim: &ContinentSim, b: BaseIdx, me: &Player) -> Goal {
+    if sim.bases[b as usize].points.is_empty() {
+        Goal::Console(b)
+    } else {
+        Goal::Point(b, pick_point(sim, b, me.team, me.feet(), me.id))
+    }
+}
+
+/// Whether one of `team`'s capture point bases has a point held or being taken by another.
+fn points_threatened(rt: &crate::sim::BaseRt, team: Team) -> bool {
+    rt.points
+        .iter()
+        .any(|p| p.owner != Some(team) || p.by.is_some_and(|t| t != team))
 }
 
 fn choose_goal(bot: &Bot, me: &Player, sim: &ContinentSim, rng: &mut Seq) -> Option<Goal> {
@@ -1282,13 +1331,13 @@ fn choose_goal(bot: &Bot, me: &Player, sim: &ContinentSim, rng: &mut Seq) -> Opt
         .bases
         .iter()
         .enumerate()
-        .filter(|(_, b)| b.owner == Some(team) && b.hack.is_some())
+        .filter(|(_, b)| b.owner == Some(team) && (b.hack.is_some() || points_threatened(b, team)))
         .map(|(i, _)| i as BaseIdx)
         .collect();
     if let Some(&b) = hacked.iter().min_by(|a, b| dist(**a).total_cmp(&dist(**b)))
         && rng.chance(0.65)
     {
-        return Some(Goal::Console(b));
+        return Some(take(sim, b, me));
     }
     // Bases we are hacking: some hold them.
     let ours: Vec<BaseIdx> = sim
@@ -1327,7 +1376,7 @@ fn choose_goal(bot: &Bot, me: &Player, sim: &ContinentSim, rng: &mut Seq) -> Opt
     if let Some(&b) = towers.iter().min_by(|a, b| dist(**a).total_cmp(&dist(**b)))
         && (rng.chance(0.75) || towers.len() == targets.len())
     {
-        return Some(Goal::Console(b));
+        return Some(take(sim, b, me));
     }
     if !targets.is_empty() {
         // Mostly the nearest, sometimes another.
@@ -1339,7 +1388,7 @@ fn choose_goal(bot: &Bot, me: &Player, sim: &ContinentSim, rng: &mut Seq) -> Opt
         } else {
             targets[rng.int(0, targets.len() as i32) as usize]
         };
-        return Some(Goal::Console(pick));
+        return Some(take(sim, pick, me));
     }
     let _ = bot;
     // Nothing to take: roam towards an enemy base or guard one of ours.
@@ -1388,6 +1437,26 @@ fn act(
             bot.rethink = rng.range(8.0, 20.0);
         } else if !ours && !rt.hackable[me.team.index()] {
             bot.goal = None;
+        }
+    }
+    if let Some(Goal::Point(b, i)) = bot.goal {
+        let rt = &sim.bases[b as usize];
+        let ours = rt.owner == Some(me.team);
+        let held = rt.points.get(i as usize).is_none_or(|p| {
+            p.owner == Some(me.team) && !p.contested && p.by.is_none_or(|t| t == me.team)
+        });
+        if !ours && !rt.hackable[me.team.index()] {
+            bot.goal = None;
+        } else if ours && rt.hack.is_none() && !points_threatened(rt, me.team) {
+            bot.goal = Some(Goal::Hold(b));
+            bot.rethink = rng.range(8.0, 20.0);
+        } else if held {
+            // Ours: on to another (or staying to guard it).
+            let j = pick_point(sim, b, me.team, pos, me.id);
+            if j != i {
+                bot.goal = Some(Goal::Point(b, j));
+                bot.walk = None;
+            }
         }
     }
     // A MAX can't work a console: it holds the base instead.
@@ -1836,7 +1905,7 @@ fn act(
     if me.kit_left > 0
         && target.is_none()
         && rng.chance(0.004)
-        && let Some(Goal::Console(b) | Goal::Hold(b)) = bot.goal
+        && let Some(Goal::Console(b) | Goal::Hold(b) | Goal::Point(b, _)) = bot.goal
         && (sim.map.bases[b as usize].center - pos).length() < sim.map.bases[b as usize].half
     {
         bot.deploys += 1;
@@ -2027,14 +2096,29 @@ fn nearest_on(sim: &ContinentSim, team: Team, pos: Vec3, pts: &[Vec3]) -> Option
         .find(|&(i, _)| walkable(sim, team, pos, pts[i], 60.0))
 }
 
-/// The way into base `b` from where it is: along its path to the console from the nearest
-/// point it can walk to.
-fn way_in(sim: &ContinentSim, team: Team, b: BaseIdx, pos: Vec3) -> Option<Walk> {
-    let pts = &sim.map.bases[b as usize].to_console;
+/// The way base `b`'s bots go in for `goal`: to its console, or to a capture point.
+fn goal_path(sim: &ContinentSim, b: BaseIdx, goal: Option<Goal>) -> &[Vec3] {
+    let l = &sim.map.bases[b as usize];
+    match goal {
+        Some(Goal::Point(g, i)) if g == b => l.points.get(i as usize).map_or(&[], |p| &p.path),
+        _ => &l.to_console,
+    }
+}
+
+/// The way into base `b` from where it is (for the bot's goal): along its path to the console
+/// (or the capture point) from the nearest point it can walk to.
+fn way_in(
+    sim: &ContinentSim,
+    team: Team,
+    b: BaseIdx,
+    pos: Vec3,
+    goal: Option<Goal>,
+) -> Option<Walk> {
+    let pts = goal_path(sim, b, goal);
     let (next, _) = nearest_on(sim, team, pos, pts)?;
     Some(Walk {
         base: b,
-        pts: pts.clone(),
+        pts: pts.to_vec(),
         next,
         inward: true,
     })
@@ -2084,6 +2168,9 @@ fn walk_stop(
     b: BaseIdx,
 ) -> usize {
     let l = &sim.map.bases[b as usize];
+    if let Some(Goal::Point(..)) = bot.goal {
+        return goal_path(sim, b, bot.goal).len().saturating_sub(1);
+    }
     let n = l.to_console.len();
     let Some((at, _)) = l.console else {
         return n.saturating_sub(1);
@@ -2118,13 +2205,14 @@ fn destination(
         Some(Goal::Console(b) | Goal::Hold(b)) if sim.map.bases[b as usize].console.is_some() => {
             Some(b)
         }
+        Some(Goal::Point(b, _)) => Some(b),
         _ => None,
     };
-    if bot
-        .walk
-        .as_ref()
-        .is_some_and(|w| w.inward && Some(w.base) != goal_base)
-    {
+    if bot.walk.as_ref().is_some_and(|w| {
+        w.inward
+            && (Some(w.base) != goal_base
+                || w.pts.last() != goal_path(sim, w.base, bot.goal).last())
+    }) {
         bot.walk = None;
     }
     // In a building it has nothing to do in: out (of a tower's floors, a bunker, a spawn room),
@@ -2133,6 +2221,7 @@ fn destination(
         Some(Goal::Console(b) | Goal::Hold(b)) => {
             sim.map.bases[b as usize].to_console.first().copied()
         }
+        Some(Goal::Point(b, _)) => goal_path(sim, b, bot.goal).first().copied(),
         Some(Goal::Go(p)) => Some(p),
         None => None,
     };
@@ -2153,16 +2242,22 @@ fn destination(
         // On the way out of where it's going: in as soon as it can.
         if !w.inward
             && goal_base == Some(w.base)
-            && let Some(inw) = way_in(sim, team, w.base, pos)
+            && let Some(inw) = way_in(sim, team, w.base, pos, bot.goal)
         {
             *w = inw;
         }
     }
     if let Some(w) = &bot.walk {
         if w.inward && w.next > walk_stop(bot, me, sim, afoot, w.base) {
-            // There: on guard.
-            return None;
+            // There: on guard (at a capture point, on its own spot in it).
+            if let Some(Goal::Point(..)) = bot.goal {
+                bot.walk = None;
+            } else {
+                return None;
+            }
         }
+    }
+    if let Some(w) = &bot.walk {
         if let Some(&p) = w.pts.get(w.next) {
             return Some(p);
         }
@@ -2172,6 +2267,36 @@ fn destination(
         bot.clear = None;
     }
     match bot.goal? {
+        Goal::Point(b, i) => {
+            let layout = &sim.map.bases[b as usize];
+            let pt = layout.points.get(i as usize)?;
+            // Its own spot in the zone (a little off the others').
+            let a = bot.id as f32 * 2.4;
+            let r = if layout.in_building(pt.pos) { 1.2 } else { 2.0 };
+            let spot = pt.stand + Vec3::new(a.cos() * r, 0.0, a.sin() * r);
+            let level = (pos.y - pt.pos.y).abs() < 1.5;
+            let zone = Vec2::new(pt.pos.x - pos.x, pt.pos.z - pos.z).length() < pt.radius;
+            if level && flat(spot) < 1.0 {
+                return None;
+            }
+            if level && zone {
+                return Some(spot);
+            }
+            let path = &pt.path;
+            let near = layout.in_building(pos)
+                || layout.inside(pos)
+                || walkable(sim, team, pos, path[0], 30.0);
+            if near {
+                bot.walk = way_in(sim, team, b, pos, bot.goal);
+                if bot.walk.is_none() && layout.in_building(pos) {
+                    bot.walk = way_out(sim, team, b, pos);
+                }
+                if let Some(w) = &bot.walk {
+                    return w.pts.get(w.next).copied();
+                }
+            }
+            Some(path[0])
+        }
         Goal::Console(b) | Goal::Hold(b) if goal_base == Some(b) => {
             let layout = &sim.map.bases[b as usize];
             if let Some(Goal::Console(_)) = bot.goal
@@ -2185,7 +2310,7 @@ fn destination(
                 || layout.inside(pos)
                 || walkable(sim, team, pos, door, 30.0);
             if near {
-                bot.walk = way_in(sim, team, b, pos);
+                bot.walk = way_in(sim, team, b, pos, bot.goal);
                 if bot.walk.is_none() && layout.in_building(pos) {
                     bot.walk = way_out(sim, team, b, pos);
                 }
