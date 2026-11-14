@@ -1973,3 +1973,64 @@ fn standing_on_two_points_reports_a_majority_and_retaking_one_ends_it() {
             .all(|p| p.owner == Some(enemy))
     );
 }
+
+#[test]
+fn ziplines_carry_riders_up_and_jumping_lets_go() {
+    let (_, _, mut sim) = setup_on(true);
+    assert!(!sim.map.caves.lines.is_empty(), "no ziplines in the caves");
+    let z = sim.map.caves.lines[0];
+    sim.add_player(1, "a", Team::Red, false);
+    // On the roof at the bottom end, looking along it, out of reach: refused.
+    let yaw = crate::types::yaw_of(z.dir());
+    sim.spawn_at(1, z.land_a + Vec3::new(0.0, 0.0, 0.0), yaw);
+    sim.players[0].protect = 0.0;
+    let far = z.land_a - z.dir().with_y(0.0).normalize() * 6.0;
+    sim.spawn_at(1, Vec3::new(far.x, z.land_a.y, far.z), yaw);
+    sim.request(1, Request::Zip(0));
+    assert!(sim.player(1).unwrap().zip.is_none());
+    sim.spawn_at(1, z.land_a, yaw);
+    sim.request(1, Request::Zip(0));
+    assert!(sim.player(1).unwrap().zip.is_some(), "didn't grab it");
+    // Up it and put down on the rim, unhurt.
+    let mut secs = 0.0;
+    while sim.player(1).unwrap().zip.is_some() && secs < 30.0 {
+        sim.step();
+        secs += TICK;
+        let p = sim.player(1).unwrap();
+        if let Some(r) = p.zip {
+            let want = z.at(r.s) - Vec3::Y * crate::zip::ZIP_HANG;
+            assert!((p.feet() - want).length() < 0.01);
+        }
+    }
+    let p = sim.player(1).unwrap();
+    assert!(p.zip.is_none() && secs < 20.0, "{secs} s");
+    assert!(
+        (p.feet() - z.land_b).length() < 0.5,
+        "{} vs {}",
+        p.feet(),
+        z.land_b
+    );
+    for _ in 0..60 {
+        sim.step();
+    }
+    let p = sim.player(1).unwrap();
+    assert!(p.alive() && p.health == 100.0);
+    assert!((p.feet() - z.land_b).length() < 0.5);
+    // Back down; halfway, a jump lets go and it falls.
+    sim.request(1, Request::Zip(0));
+    assert!(sim.player(1).unwrap().zip.is_some_and(|r| r.sign < 0.0));
+    for _ in 0..(z.len() / 2.0 / crate::zip::ZIP_SPEED / TICK) as usize {
+        sim.step();
+    }
+    let mid = sim.player(1).unwrap().feet();
+    let mut cmd = sim.player(1).unwrap().cmd;
+    cmd.jumps += 1;
+    sim.set_cmd(1, cmd);
+    sim.step();
+    let p = sim.player(1).unwrap();
+    assert!(p.zip.is_none());
+    for _ in 0..30 {
+        sim.step();
+    }
+    assert!(sim.player(1).unwrap().feet().y < mid.y - 0.5);
+}

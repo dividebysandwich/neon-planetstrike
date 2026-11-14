@@ -28,6 +28,9 @@ pub enum Target {
     Hack(HackTarget),
     /// A harvester of one's faction's: its construction terminal.
     Construction(VehicleId),
+    /// A zipline within reach (its index), and letting go of one.
+    Zip(u16),
+    LetGo,
 }
 
 impl Target {
@@ -43,6 +46,8 @@ impl Target {
             Target::Hack(HackTarget::Terminal { .. }) => "Hack the terminal".into(),
             Target::Hack(HackTarget::Turret(_)) => "Hack the turret".into(),
             Target::Construction(_) => "Construction terminal".into(),
+            Target::Zip(_) => "Ride the zipline".into(),
+            Target::LetGo => "Let go".into(),
         }
     }
 }
@@ -130,6 +135,10 @@ fn hint(game: Res<Game>, mover: Res<Mover>, local: Res<LocalCmd>, mut hint: ResM
         hint.0 = Some(Target::Leave);
         return;
     }
+    if game.mine().is_some_and(|m| m.zip.is_some()) {
+        hint.0 = Some(Target::LetGo);
+        return;
+    }
     let Some(map) = &game.map else { return };
     if !mover.valid {
         return;
@@ -164,6 +173,16 @@ fn hint(game: Res<Game>, mover: Res<Mover>, local: Res<LocalCmd>, mut hint: ResM
             let d = (back - eye).length();
             if d < 2.8 {
                 offer(d - 2.0, Target::Construction(v.id));
+            }
+        }
+    }
+    // Ziplines (not in a MAX).
+    if !game.mine().is_some_and(|m| m.loadout.max()) {
+        let hands = eye + Vec3::Y * ps_sim::zip::ZIP_HANDS;
+        for (i, z) in map.caves.lines.iter().enumerate() {
+            let (_, d) = z.closest(hands);
+            if d < ps_sim::zip::ZIP_REACH {
+                offer(d, Target::Zip(i as u16));
             }
         }
     }
@@ -260,7 +279,8 @@ fn on_use(
     }
     let Some(t) = hint.0 else { return };
     match t {
-        Target::Leave => game.request(Request::ExitVehicle),
+        Target::Leave | Target::LetGo => game.request(Request::ExitVehicle),
+        Target::Zip(z) => game.request(Request::Zip(z)),
         Target::Enter(v, _) => game.request(Request::EnterVehicle(v)),
         Target::Heal => game.request(Request::Heal),
         Target::Turret(t) => game.request(Request::EnterTurret(t)),

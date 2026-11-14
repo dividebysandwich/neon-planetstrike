@@ -184,6 +184,8 @@ pub struct Player {
     pub carrying: Option<crate::construct::StructureKind>,
     /// Blinded by a flash grenade for this long more (s).
     pub flashed: f32,
+    /// Hanging on a zipline.
+    pub zip: Option<crate::zip::ZipRide>,
 }
 
 impl Player {
@@ -233,6 +235,7 @@ impl Player {
             spot_ready: 0,
             carrying: None,
             flashed: 0.0,
+            zip: None,
             vehicle_cooldown: 0.0,
             shots: 0,
         }
@@ -393,6 +396,7 @@ impl Player {
             seat_ammo: None,
             alt_ammo: None,
             turret: self.turret.map(|t| t as u16),
+            zip: self.zip.map(|z| z.line),
             kills: self.kills,
             deaths: self.deaths,
             assists: self.assists,
@@ -1054,6 +1058,7 @@ impl ContinentSim {
         p.hurt_by.clear();
         p.protect = SPAWN_PROTECT;
         p.seat = None;
+        p.zip = None;
         p.history.clear();
         self.say(
             Audience::Player(id),
@@ -1180,8 +1185,11 @@ impl ContinentSim {
             }
             Request::EnterVehicle(v) => self.enter(pi, v),
             Request::EnterTurret(t) => self.enter_turret(pi, t as usize),
+            Request::Zip(line) => self.zip_on(pi, line),
             Request::ExitVehicle => {
-                if self.players[pi].turret.is_some() {
+                if self.players[pi].zip.is_some() {
+                    self.zip_off(pi, None);
+                } else if self.players[pi].turret.is_some() {
                     self.leave_turret(pi);
                 } else {
                     self.exit(pi);
@@ -1885,9 +1893,107 @@ impl ContinentSim {
                 p.firing = tr.cooldown > TURRET_INTERVAL * 0.5;
                 continue;
             }
+            if self.players[pi].zip.is_some() {
+                // On a zipline: carried along it (shooting as on foot).
+                self.step_zip(pi, dt);
+                if self.players[pi].alive() {
+                    self.weapons(pi, dt);
+                }
+                continue;
+            }
             self.move_player(pi, dt);
             self.weapons(pi, dt);
         }
+    }
+
+    /// Hangs player `pi` on zipline `line` (on foot, within reach), heading the way it looks.
+    fn zip_on(&mut self, pi: usize, line: u16) {
+        let p = &self.players[pi];
+        let id = p.id;
+        if !p.afoot() || p.zip.is_some() {
+            return;
+        }
+        if p.max_suit() {
+            return self.deny(id, Deny::Max);
+        }
+        let Some(z) = self.map.caves.lines.get(line as usize) else {
+            return;
+        };
+        let (s, d) = z.closest(p.eye() + Vec3::Y * crate::zip::ZIP_HANDS);
+        if d > crate::zip::ZIP_REACH + 0.5 {
+            return self.deny(id, Deny::TooFar);
+        }
+        let look = look_dir(p.cmd.yaw, p.cmd.pitch);
+        let mut sign = if look.dot(z.dir()) >= 0.0 { 1.0 } else { -1.0 };
+        // (At an end: away from it.)
+        if s < 1.0 {
+            sign = 1.0;
+        } else if s > z.len() - 1.0 {
+            sign = -1.0;
+        }
+        let p = &mut self.players[pi];
+        p.zip = Some(crate::zip::ZipRide { line, s, sign });
+        p.cmd.feet = None;
+        p.body.vel = Vec2::ZERO;
+        p.body.vy = 0.0;
+        p.body.jumps_seen = Some(p.cmd.jumps);
+        p.cloaked = false;
+        p.carrying = None;
+    }
+
+    /// Carries a rider along its zipline: at its end it's put down there; the jump key lets go.
+    fn step_zip(&mut self, pi: usize, dt: f32) {
+        let Some(mut ride) = self.players[pi].zip else {
+            return;
+        };
+        let Some(z) = self.map.caves.lines.get(ride.line as usize).copied() else {
+            self.players[pi].zip = None;
+            return;
+        };
+        let jumps = self.players[pi].cmd.jumps;
+        if self.players[pi].body.jumps_seen.is_some_and(|j| j != jumps) {
+            self.players[pi].body.jumps_seen = Some(jumps);
+            return self.zip_off(pi, None);
+        }
+        ride.s += ride.sign * z.speed(ride.sign) * dt;
+        if ride.s <= 0.0 {
+            return self.zip_off(pi, Some(z.land_a));
+        }
+        if ride.s >= z.len() {
+            return self.zip_off(pi, Some(z.land_b));
+        }
+        let p = &mut self.players[pi];
+        p.zip = Some(ride);
+        p.body.feet = z.at(ride.s) - Vec3::Y * crate::zip::ZIP_HANG;
+        p.body.vy = 0.0;
+        p.body.fall = 0.0;
+    }
+
+    /// Takes player `pi` off its zipline: put down at `land`, or let go where it hangs (it
+    /// falls from there).
+    fn zip_off(&mut self, pi: usize, land: Option<Vec3>) {
+        let p = &mut self.players[pi];
+        if p.zip.take().is_none() {
+            return;
+        }
+        let jumps = p.body.jumps_seen;
+        let at = land.unwrap_or(p.body.feet);
+        p.body = Body::at(at);
+        p.body.jumps_seen = jumps;
+        if land.is_none() {
+            // (Falling: never at rest in the air.)
+            p.body.vy = -0.01;
+        }
+        p.cmd.feet = None;
+        let (id, yaw) = (p.id, p.cmd.yaw);
+        self.say(
+            Audience::Player(id),
+            SimEvent::Spawned {
+                player: id,
+                pos: at,
+                yaw,
+            },
+        );
     }
 
     fn step_seated(&mut self, pi: usize) {
@@ -3669,6 +3775,7 @@ impl ContinentSim {
         p.cloaked = false;
         p.hacking = None;
         p.carrying = None;
+        p.zip = None;
         p.health = 0.0;
         p.dead = Some(0.0);
         p.downed = afoot;

@@ -201,6 +201,8 @@ pub struct MeSnap {
     pub alt_ammo: Option<(u16, u16)>,
     /// Manning a turret (its index on the continent).
     pub turret: Option<u16>,
+    /// Hanging on a zipline (its index on the continent).
+    pub zip: Option<u16>,
     pub kills: u16,
     pub deaths: u16,
     pub assists: u16,

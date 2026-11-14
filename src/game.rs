@@ -1113,7 +1113,8 @@ fn predict(
         local.cmd.vehicle = None;
         return;
     };
-    if !game.ready() || me.dead.is_some() || me.turret.is_some() {
+    // (On a zipline the server carries us: no prediction.)
+    if !game.ready() || me.dead.is_some() || me.turret.is_some() || me.zip.is_some() {
         mover.valid = false;
         mover.drive = None;
         local.cmd.feet = None;

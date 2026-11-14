@@ -13,10 +13,12 @@ use glam::{Vec2, Vec3};
 
 use crate::base::BaseLayout;
 use crate::collide::Collider;
+use crate::collide::World;
 use crate::noise::{self, smoothstep};
 use crate::roads::NEAR_MAX;
 use crate::terrain::{CELL, COAST, HALF, N, Pad, Terrain};
 use crate::worldgen::{BaseKind, ContinentDef};
+use crate::zip::{ZIP_HANG, Zipline};
 
 /// A canyon's half width at its floor (from the road's middle; the road and its shoulders fit
 /// in it), and how far its walls take to rise.
@@ -41,6 +43,10 @@ const MOUTH: f32 = 30.0;
 const RING_IN: f32 = 0.62;
 const RING_OUT: f32 = 14.0;
 const SECTORS: usize = 16;
+/// A zipline's top: its landing this far out past the pad's edge (just over the sinkhole's
+/// lip), its cable this much higher than at the bottom (on a mast: it comes up from below).
+const LINE_OUT: f32 = SINK + SINK_WALL + 6.0;
+const LINE_MAST: f32 = 3.0;
 
 /// How high the plateau stands over the land at (x, z) (before the canyons and sinkholes
 /// are cut out of it).
@@ -88,10 +94,11 @@ pub fn raise(t: &mut Terrain, pads: &[Pad], seed: u32) {
     }
 }
 
-/// A continent's caves: the roofs over its canyons and sinkholes.
+/// A continent's caves: the roofs over its canyons and sinkholes, and its ziplines.
 #[derive(Clone, Debug, Default)]
 pub struct Caves {
     pub roofs: Vec<Collider>,
+    pub lines: Vec<Zipline>,
 }
 
 /// The lowest of the land's heights at `pts`.
@@ -246,9 +253,19 @@ pub fn build(def: &ContinentDef, t: &Terrain, layouts: &[BaseLayout]) -> Caves {
         let p = &pads[b];
         let floor = layouts.get(b).map_or(t.pad_heights[b], |l| l.center.y);
         let (r0, r1) = (p.radius * RING_IN, p.radius + RING_OUT);
+        // (Open where its zipline may run.)
+        let ways = line_ways(def, t, b, floor);
+        let step = std::f32::consts::TAU / SECTORS as f32;
         for k in 0..SECTORS {
-            let a0 = k as f32 / SECTORS as f32 * std::f32::consts::TAU;
-            let a1 = (k + 1) as f32 / SECTORS as f32 * std::f32::consts::TAU;
+            let a0 = k as f32 * step;
+            let a1 = (k + 1) as f32 * step;
+            let near = |w: f32| {
+                let d = (w - (a0 + a1) / 2.0).rem_euclid(std::f32::consts::TAU);
+                d.min(std::f32::consts::TAU - d) < step * 1.6
+            };
+            if ways.iter().any(|&w| near(w)) {
+                continue;
+            }
             let dir = |a: f32| Vec2::new(a.cos(), a.sin());
             let poly = [
                 p.center + dir(a0) * r0,
@@ -267,6 +284,103 @@ pub fn build(def: &ContinentDef, t: &Terrain, layouts: &[BaseLayout]) -> Caves {
         }
     }
     caves
+}
+
+/// Which ways base `b`'s zipline may run up to the rim (radians round its pad, the likeliest
+/// first): where the rim stands high and away from the canyons. Its ring roof is left open
+/// that way.
+fn line_ways(def: &ContinentDef, t: &Terrain, b: usize, floor: f32) -> Vec<f32> {
+    let p = &def.pads()[b];
+    let h = noise::hash2(b as i32, 31, def.terrain_seed);
+    (0..SECTORS)
+        .map(|k| {
+            (k as f32 + 0.5 + (h % 97) as f32 / 400.0) / SECTORS as f32 * std::f32::consts::TAU
+        })
+        .filter(|&a| {
+            let rim = p.center + Vec2::new(a.cos(), a.sin()) * (p.radius + LINE_OUT);
+            t.height(rim.x, rim.y) >= floor + 18.0
+                && t.road_distance(rim.x, rim.y) >= NEAR_MAX - 0.5
+        })
+        .take(3)
+        .collect()
+}
+
+/// The ziplines: one from each base's main building's roof up to the sinkhole's rim (where
+/// one runs clear, and lands on the plateau away from the canyons).
+pub fn lines(
+    def: &ContinentDef,
+    t: &Terrain,
+    layouts: &[BaseLayout],
+    world: &World,
+) -> Vec<Zipline> {
+    let mut out = Vec::new();
+    if !def.theme.caves() {
+        return out;
+    }
+    let pads = def.pads();
+    for (b, l) in layouts.iter().enumerate() {
+        if l.kind == BaseKind::Tower {
+            continue;
+        }
+        let (lo, hi) = l.building;
+        // The roof's top (its slab over the top storey) and spots on it near its corners.
+        let roof = hi.y + 0.6;
+        let corners = [
+            Vec3::new(lo.x + 2.5, roof, lo.z + 2.5),
+            Vec3::new(hi.x - 2.5, roof, lo.z + 2.5),
+            Vec3::new(hi.x - 2.5, roof, hi.z - 2.5),
+            Vec3::new(lo.x + 2.5, roof, hi.z - 2.5),
+        ];
+        let p = &pads[b];
+        let mut best: Option<Zipline> = None;
+        'search: for a in line_ways(def, t, b, l.center.y) {
+            let rim2 = p.center + Vec2::new(a.cos(), a.sin()) * (p.radius + LINE_OUT);
+            let ground = t.height(rim2.x, rim2.y);
+            let land_b = Vec3::new(rim2.x, ground, rim2.y);
+            if world.ceiling(land_b.x, land_b.z, ground + 0.5).is_some()
+                || world
+                    .ground(land_b.x, land_b.z, ground + 3.0)
+                    .is_some_and(|g| g > ground + 0.3)
+            {
+                continue;
+            }
+            // From the corner of the roof facing it.
+            let mut order = corners;
+            order.sort_by(|x, y| {
+                let d = |c: &Vec3| Vec2::new(c.x - rim2.x, c.z - rim2.y).length();
+                d(x).total_cmp(&d(y))
+            });
+            for land_a in order.iter().take(2) {
+                let z = Zipline {
+                    a: *land_a + Vec3::Y * (ZIP_HANG + 0.3),
+                    b: land_b + Vec3::Y * (ZIP_HANG + LINE_MAST),
+                    land_a: *land_a,
+                    land_b,
+                };
+                if clear(world, &z) {
+                    best = Some(z);
+                    break 'search;
+                }
+            }
+        }
+        out.extend(best);
+    }
+    out
+}
+
+/// Whether a rider runs along `z` clear of everything (the cable and the body under it, short
+/// of its ends' landings).
+fn clear(world: &World, z: &Zipline) -> bool {
+    let len = z.len();
+    let rise = (z.b.y - z.a.y).abs() / len.max(1.0);
+    if !(40.0..=260.0).contains(&len) || rise > 0.7 {
+        return false;
+    }
+    let d = z.dir();
+    let (s0, s1) = (4.0, len - 4.0);
+    [0.2, 1.0, ZIP_HANG - 0.1]
+        .iter()
+        .all(|&down| world.clear(z.a + d * s0 - Vec3::Y * down, z.a + d * s1 - Vec3::Y * down))
 }
 
 /// Whether there's a cave roof over `p` within `up` metres.
@@ -326,6 +440,13 @@ mod tests {
                 assert!(!roofed(caves, *p, HEADROOM - 0.5), "{p}: roof too low");
             }
         }
+        // A zipline at (nearly) every base.
+        let bases = m.bases.iter().filter(|l| l.kind != BaseKind::Tower).count();
+        assert!(
+            caves.lines.len() * 10 >= bases * 8,
+            "{} lines",
+            caves.lines.len()
+        );
         // Spawns, consoles and points under the open sky, or far below a roof.
         for l in &m.bases {
             let spots = l

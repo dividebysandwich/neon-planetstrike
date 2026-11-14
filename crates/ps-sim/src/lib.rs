@@ -28,6 +28,7 @@ pub mod types;
 pub mod vehicle;
 pub mod weapons;
 pub mod worldgen;
+pub mod zip;
 
 pub use events::{
     Audience, Cause, Deny, HackTarget, Outgoing, Request, SimEvent, SpawnPoint, SpotTarget,

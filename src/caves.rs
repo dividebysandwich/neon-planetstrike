@@ -60,6 +60,95 @@ pub fn cover_grid(map: &ContinentMap) -> Option<Vec<f32>> {
     Some(soft)
 }
 
+/// A box `w` thick along `p`..`q` (both windings: seen from anywhere).
+fn beam(m: &mut MeshData, p: Vec3, q: Vec3, w: f32) {
+    let d = (q - p).normalize_or_zero();
+    let side = if d.y.abs() > 0.9 { Vec3::X } else { Vec3::Y };
+    let u = d.cross(side).normalize_or_zero() * w / 2.0;
+    let v = d.cross(u).normalize_or_zero() * w / 2.0;
+    let corners = [u + v, u - v, -u - v, -u + v];
+    for k in 0..4 {
+        let (a, b) = (corners[k], corners[(k + 1) % 4]);
+        let nrm = (a + b).normalize_or_zero();
+        let base = m.pos.len() as u32;
+        let len = (q - p).length();
+        for (c, s) in [(p + a, 0.0), (p + b, 0.0), (q + b, len), (q + a, len)] {
+            m.pos.push(c.to_array());
+            m.nrm.push(nrm.to_array());
+            m.uv.push([s, 0.0]);
+            m.col.push([1.0; 4]);
+        }
+        m.idx
+            .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        m.idx
+            .extend([base, base + 2, base + 1, base, base + 3, base + 2]);
+    }
+}
+
+/// Spawns the ziplines: a glowing cable between masts.
+fn spawn_lines(
+    commands: &mut Commands,
+    map: &ContinentMap,
+    lk: &Look,
+    meshes: &mut Assets<Mesh>,
+    std: &mut Assets<StandardMaterial>,
+    accents: &mut Assets<AccentMaterial>,
+) {
+    if map.caves.lines.is_empty() {
+        return;
+    }
+    let (mut cable, mut masts, mut lamps) = (
+        MeshData::default(),
+        MeshData::default(),
+        MeshData::default(),
+    );
+    for z in &map.caves.lines {
+        beam(&mut cable, z.a, z.b, 0.07);
+        for (land, end) in [(z.land_a, z.a), (z.land_b, z.b)] {
+            // A mast beside the landing, over to the cable's end.
+            let foot = land + (land - end).with_y(0.0).normalize_or_zero() * 0.6;
+            let top = Vec3::new(foot.x, end.y + 0.5, foot.z);
+            beam(&mut masts, foot, top, 0.3);
+            beam(&mut masts, top, end + Vec3::Y * 0.5, 0.18);
+            beam(&mut lamps, top - Vec3::Y * 0.6, top + Vec3::Y * 0.05, 0.36);
+        }
+    }
+    let rock = std.add(StandardMaterial {
+        base_color: Color::linear_rgb(lk.rock.x * 2.0, lk.rock.y * 2.0, lk.rock.z * 2.0),
+        perceptual_roughness: 0.6,
+        ..default()
+    });
+    for (m, mat) in [
+        (
+            cable,
+            accents.add(AccentMaterial {
+                neon: NeonUniform::flow(lk.neon[1], 2.5, 6.0),
+                overlay: false,
+            }),
+        ),
+        (
+            lamps,
+            accents.add(AccentMaterial {
+                neon: NeonUniform::fixed(lk.neon[1], 3.0),
+                overlay: false,
+            }),
+        ),
+    ] {
+        commands.spawn((
+            ContinentPart,
+            Mesh3d(meshes.add(m.to_mesh())),
+            MeshMaterial3d(mat),
+            Transform::IDENTITY,
+        ));
+    }
+    commands.spawn((
+        ContinentPart,
+        Mesh3d(meshes.add(masts.to_mesh())),
+        MeshMaterial3d(rock),
+        Transform::IDENTITY,
+    ));
+}
+
 /// Spawns the roofs' slabs and stalactites.
 pub fn spawn(
     commands: &mut Commands,
@@ -69,6 +158,7 @@ pub fn spawn(
     std: &mut Assets<StandardMaterial>,
     accents: &mut Assets<AccentMaterial>,
 ) {
+    spawn_lines(commands, map, lk, meshes, std, accents);
     if map.caves.roofs.is_empty() {
         return;
     }

@@ -448,6 +448,16 @@ fn place_camera(
         let eye = ps_sim::player::EYE - 0.5 * look.crouch;
         cam.translation = mover.body.feet + Vec3::Y * eye;
         cam.rotation = rot;
+    } else if let Some(m) = game.mine().filter(|m| m.zip.is_some()) {
+        // On a zipline: carried along by the server, followed smoothly.
+        let want = m.feet + Vec3::Y * ps_sim::player::EYE;
+        let k = if (cam.translation - want).length() > 8.0 {
+            1.0
+        } else {
+            (dt * 12.0).min(1.0)
+        };
+        cam.translation = cam.translation.lerp(want, k);
+        cam.rotation = rot;
     }
 }
 

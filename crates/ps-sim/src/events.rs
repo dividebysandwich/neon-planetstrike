@@ -166,6 +166,8 @@ pub enum Request {
     /// Man a turret (its index on the continent).
     EnterTurret(u16),
     ExitVehicle,
+    /// Hang on a zipline (its index on the continent).
+    Zip(u16),
     SpawnVehicle {
         base: BaseIdx,
         terminal: u8,

@@ -68,6 +68,8 @@ impl ContinentMap {
                 .shields
                 .extend(b.shields.iter().map(|s| (s.collider, None)));
         }
+        let mut caves = caves;
+        caves.lines = crate::caves::lines(&def, &terrain, &bases, &world);
         ContinentMap {
             def,
             terrain,
