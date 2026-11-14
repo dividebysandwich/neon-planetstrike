@@ -619,6 +619,13 @@ fn events(
                 .and_then(|d| d.bases.get(b as usize))
                 .map_or(String::new(), |b| b.name.clone())
         };
+        let points = |c: u8, b: BaseIdx| {
+            game.def
+                .continents
+                .get(c as usize)
+                .and_then(|d| d.bases.get(b as usize))
+                .is_some_and(|b| b.capture == ps_sim::worldgen::Capture::Points)
+        };
         let msg = match *c {
             Change::BaseCaptured {
                 continent,
@@ -640,15 +647,26 @@ fn events(
                 base,
                 team,
             } if Some(continent) == game.continent => Some(format!(
-                "{} is hacking {}",
+                "{} is {} {}",
                 team.upper(),
+                if points(continent, base) {
+                    "capturing"
+                } else {
+                    "hacking"
+                },
                 name(continent, base)
             )),
             Change::HackStopped {
                 continent, base, ..
-            } if Some(continent) == game.continent => {
-                Some(format!("Hack of {} stopped", name(continent, base)))
-            }
+            } if Some(continent) == game.continent => Some(format!(
+                "{} of {} stopped",
+                if points(continent, base) {
+                    "Capture"
+                } else {
+                    "Hack"
+                },
+                name(continent, base)
+            )),
             _ => None,
         };
         if let Some(m) = msg {

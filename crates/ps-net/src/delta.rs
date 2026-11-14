@@ -367,6 +367,7 @@ mod tests {
                 resources: 600,
                 hacked: 0,
                 hacker: None,
+                points: None,
             }],
             ..Default::default()
         }

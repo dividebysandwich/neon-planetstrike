@@ -15,6 +15,7 @@ use crate::base::{
     GATE_CORE, GATE_H, GENERATOR_HALF, PAD_RADIUS, REARM_RADIUS, SILO_REACH, TURRET_BARREL,
     TURRET_EYE, TURRET_PIVOT, TerminalKind, USE_REACH, in_gate_bubble,
 };
+use crate::capture::PointRt;
 use crate::collide::{Collider, World};
 use crate::events::{Audience, Cause, Deny, Outgoing, Request, SimEvent, SpawnPoint};
 use crate::map::ContinentMap;
@@ -662,6 +663,10 @@ pub struct BaseRt {
     resources_known: bool,
     /// Its terminals hacked (by index): whose they are now, and for how long more (s).
     pub hacked: Vec<Option<(Team, f32)>>,
+    /// Its capture points (A, B, C; none where the console is hacked).
+    pub points: Vec<PointRt>,
+    /// Who held two points the last time the server was told (`None`: never told).
+    reported: Option<Option<Team>>,
 }
 
 impl BaseRt {
@@ -704,6 +709,9 @@ pub struct ContinentSim {
     pub out: Vec<Outgoing>,
     /// Consoles solved since the server last took them: base, faction, player.
     pub solved: Vec<(BaseIdx, Team, PlayerId)>,
+    /// Capture point bases whose majority changed since the server last took them: the
+    /// faction (not the owner) holding two points that may take it, if any.
+    pub majority: Vec<(BaseIdx, Option<Team>)>,
     /// Gate cores entered since the server last took them: who and which gate.
     pub warps: Vec<(Warper, u8)>,
     /// Bases whose silo ran dry since the server last took them.
@@ -776,6 +784,8 @@ impl ContinentSim {
                 resources: crate::state::START_RESOURCES,
                 resources_known: false,
                 hacked: vec![None; l.terminals.len()],
+                points: vec![PointRt::default(); l.points.len()],
+                reported: None,
             })
             .collect();
         let world = map.world.clone();
@@ -793,6 +803,7 @@ impl ContinentSim {
             fx: VecDeque::new(),
             out: Vec::new(),
             solved: Vec::new(),
+            majority: Vec::new(),
             warps: Vec::new(),
             drained: Vec::new(),
             awards: Vec::new(),
@@ -848,6 +859,9 @@ impl ContinentSim {
         if changed {
             for h in rt.hacked.iter_mut() {
                 *h = None;
+            }
+            for pt in rt.points.iter_mut() {
+                *pt = PointRt::held_by(owner);
             }
             self.update_shields();
             for t in self.turrets.iter_mut().filter(|t| t.base == b) {
@@ -1360,6 +1374,60 @@ impl ContinentSim {
         self.poke_piece(b, piece, id, team);
     }
 
+    /// Steps the capture points: who stands in each, who takes them (XP to those there), and
+    /// who holds two (told to the server when it changes).
+    fn step_points(&mut self, dt: f32) {
+        for b in 0..self.bases.len() {
+            if self.bases[b].points.is_empty() {
+                continue;
+            }
+            let (owner, hackable) = (self.bases[b].owner, self.bases[b].hackable);
+            let eligible = Team::ALL.map(|t| owner == Some(t) || hackable[t.index()]);
+            for i in 0..self.bases[b].points.len() {
+                let pt = &self.map.bases[b].points[i];
+                let (at, r2) = (pt.pos, pt.radius * pt.radius);
+                let mut present = [0u8; 3];
+                let mut who = Vec::new();
+                for p in &self.players {
+                    let f = p.body.feet;
+                    if p.afoot()
+                        && (f.y - at.y).abs() < crate::capture::POINT_DY
+                        && Vec2::new(f.x - at.x, f.z - at.z).length_squared() < r2
+                    {
+                        let k = &mut present[p.team.index()];
+                        *k = k.saturating_add(1);
+                        who.push((p.id, p.team));
+                    }
+                }
+                let Some(took) =
+                    crate::capture::step_point(&mut self.bases[b].points[i], present, eligible, dt)
+                else {
+                    continue;
+                };
+                let defend = Some(took) == owner && self.bases[b].hack.is_some();
+                for (id, t) in who {
+                    if t != took {
+                        continue;
+                    }
+                    if defend {
+                        self.award(id, Award::Defend, progress::CAPTURE_XP);
+                        self.stat(id, "defends", 1);
+                    } else {
+                        self.award(id, Award::Capture, progress::CAPTURE_XP);
+                        self.stat(id, "points", 1);
+                    }
+                }
+            }
+            let rt = &mut self.bases[b];
+            let want = crate::capture::majority(&rt.points)
+                .filter(|&t| Some(t) != rt.owner && rt.hackable[t.index()]);
+            if rt.reported != Some(want) {
+                rt.reported = Some(want);
+                self.majority.push((b as BaseIdx, want));
+            }
+        }
+    }
+
     /// Pokes a console's piece (players through `poke`, bots straight).
     pub fn poke_piece(&mut self, b: usize, piece: usize, by: PlayerId, team: Team) {
         let rt = &mut self.bases[b];
@@ -1753,6 +1821,7 @@ impl ContinentSim {
             .collect();
         self.world.set_dynamic(dynamic);
         self.step_players(dt);
+        self.step_points(dt);
         // (Shots and sight lines: the structures stand in the way.)
         let built: Vec<Collider> = self.structure_colliders().collect();
         self.world.set_dynamic(built);
@@ -3809,11 +3878,24 @@ impl ContinentSim {
                         hacker = Some(*t);
                     }
                 }
+                let points = (b.points.len() == 3).then(|| {
+                    std::array::from_fn(|i| {
+                        let p = &b.points[i];
+                        crate::snapshot::PointSnap {
+                            owner: p.owner,
+                            by: p.by,
+                            // (In steps of 2 %: fewer changes to send.)
+                            progress: ((p.progress * 50.0).round() as u8).min(50) * 2,
+                            contested: p.contested,
+                        }
+                    })
+                });
                 crate::snapshot::BaseSnap {
                     generator: b.generator,
                     resources: b.resources.round() as u16,
                     hacked,
                     hacker,
+                    points,
                 }
             })
             .collect();

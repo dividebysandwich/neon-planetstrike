@@ -49,10 +49,11 @@ pub fn lines(stats: &[(String, i64)]) -> Vec<String> {
             get("headshots")
         ),
         format!(
-            "Vehicles destroyed {}   Revives {}   Hacks {}   Built {}",
+            "Vehicles destroyed {}   Revives {}   Hacks {}   Points {}   Built {}",
             get("vehicle_kills"),
             get("revives"),
             get("hacks") + get("terminal_hacks"),
+            get("points"),
             get("structures_built")
         ),
         format!("Played {}h {:02}m", secs / 3600, secs / 60 % 60),

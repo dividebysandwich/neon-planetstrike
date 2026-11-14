@@ -95,6 +95,12 @@ pub enum FromContinent {
         team: Team,
         by: PlayerId,
     },
+    /// Who holds two of a capture point base's points (and may take it), when it changes.
+    Majority {
+        continent: ContinentId,
+        base: BaseIdx,
+        team: Option<Team>,
+    },
     Transferred {
         player: Box<Player>,
         to: TransferTo,
@@ -322,6 +328,13 @@ impl Continent {
                     base,
                     team,
                     by,
+                });
+            }
+            for (base, team) in std::mem::take(&mut sim.majority) {
+                let _ = self.hub.send(FromContinent::Majority {
+                    continent: self.id,
+                    base,
+                    team,
                 });
             }
             // XP: the humans' to the hub (bots keep only their score).

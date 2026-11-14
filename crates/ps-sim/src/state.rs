@@ -13,10 +13,22 @@
 use serde::{Deserialize, Serialize};
 
 use crate::types::Team;
-use crate::worldgen::{BaseIdx, BaseKind, ContinentId, Node, WorldDef, WorldParams};
+use crate::worldgen::{BaseIdx, BaseKind, Capture, ContinentId, Node, WorldDef, WorldParams};
 
 /// Seconds a hack takes to capture a base.
 pub const HACK_TIME: f32 = 300.0;
+
+/// Seconds a hack (a capture, at capture points) of base `b` on continent `c` runs.
+pub fn hack_time(def: &WorldDef, c: ContinentId, b: BaseIdx) -> f32 {
+    let site = def
+        .continents
+        .get(c as usize)
+        .and_then(|cd| cd.bases.get(b as usize));
+    match site.map(|s| s.capture) {
+        Some(Capture::Points) => crate::capture::POINT_CAPTURE_TIME,
+        _ => HACK_TIME,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Hack {
@@ -228,7 +240,10 @@ impl WorldState {
             }
             return Vec::new();
         }
-        if st.hack.is_some_and(|h| h.team == team) || !self.can_hack(def, c, b, team) {
+        if st.hack.is_some_and(|h| h.team == team)
+            || !self.can_hack(def, c, b, team)
+            || def.continents[c as usize].bases[b as usize].capture == Capture::Points
+        {
             return Vec::new();
         }
         // A tower is taken at once.
@@ -237,12 +252,51 @@ impl WorldState {
         }
         self.continents[c as usize].bases[b as usize].hack = Some(Hack {
             team,
-            left: HACK_TIME,
+            left: hack_time(def, c, b),
         });
         vec![Change::HackStarted {
             continent: c,
             base: b,
             team,
+        }]
+    }
+
+    /// Who holds two of base `b`'s capture points now (the continent's word; `None`: nobody,
+    /// or its owners). A faction that may take it starts its capture (or takes over
+    /// another's); otherwise a capture under way stops.
+    pub fn points_held(
+        &mut self,
+        def: &WorldDef,
+        c: ContinentId,
+        b: BaseIdx,
+        team: Option<Team>,
+    ) -> Vec<Change> {
+        let st = self.continents[c as usize].bases[b as usize];
+        if let Some(t) = team
+            && st.owner != Some(t)
+            && self.can_hack(def, c, b, t)
+        {
+            if st.hack.is_some_and(|h| h.team == t) {
+                return Vec::new();
+            }
+            self.continents[c as usize].bases[b as usize].hack = Some(Hack {
+                team: t,
+                left: hack_time(def, c, b),
+            });
+            return vec![Change::HackStarted {
+                continent: c,
+                base: b,
+                team: t,
+            }];
+        }
+        let Some(h) = st.hack else {
+            return Vec::new();
+        };
+        self.continents[c as usize].bases[b as usize].hack = None;
+        vec![Change::HackStopped {
+            continent: c,
+            base: b,
+            by: st.owner.unwrap_or(h.team),
         }]
     }
 
@@ -375,7 +429,7 @@ impl WorldState {
                 {
                     b.hack = Some(Hack {
                         team,
-                        left: HACK_TIME,
+                        left: hack_time(def, continent, base),
                     });
                 }
             }
@@ -485,6 +539,11 @@ mod tests {
                 _ => None,
             })
             .collect();
+        let consoles: Vec<BaseIdx> = next_to_gate
+            .iter()
+            .copied()
+            .filter(|&b| cd.bases[b as usize].capture == Capture::Console)
+            .collect();
         assert!(!next_to_gate.is_empty());
         for (b, site) in cd.bases.iter().enumerate() {
             let b = b as BaseIdx;
@@ -505,7 +564,9 @@ mod tests {
             assert_eq!(st.can_hack(&def, c, b, attacker), linked, "base {b}");
         }
         // Hack the gate's base: the owner stops it, the attacker hacks again and holds out.
-        let b = next_to_gate[0];
+        let Some(&b) = consoles.first() else {
+            return;
+        };
         let owner = st.base(c, b).owner;
         assert!(matches!(
             st.console_solved(&def, c, b, attacker).first(),
@@ -540,6 +601,58 @@ mod tests {
                 .iter()
                 .all(|b| b.owner == Some(attacker))
         );
+    }
+
+    #[test]
+    fn holding_two_points_runs_a_capture() {
+        let def = world();
+        let mut tried = 0;
+        for seed in 0..20 {
+            let def = if seed == 0 {
+                def.clone()
+            } else {
+                WorldDef::generate(WorldParams { seed, contested: 6 })
+            };
+            let mut st = WorldState::initial(&def);
+            let found = def.continents.iter().find_map(|cd| {
+                cd.bases.iter().enumerate().find_map(|(b, site)| {
+                    let b = b as BaseIdx;
+                    (site.capture == Capture::Points)
+                        .then(|| {
+                            Team::ALL
+                                .into_iter()
+                                .find(|&t| st.can_hack(&def, cd.id, b, t))
+                                .map(|t| (cd.id, b, t))
+                        })
+                        .flatten()
+                })
+            });
+            let Some((c, b, t)) = found else { continue };
+            tried += 1;
+            // No console at a points base.
+            assert!(st.console_solved(&def, c, b, t).is_empty());
+            let ch = st.points_held(&def, c, b, Some(t));
+            assert!(matches!(ch[..], [Change::HackStarted { team, .. }] if team == t));
+            assert_eq!(st.base(c, b).hack.unwrap().left, hack_time(&def, c, b));
+            // Again: nothing new. A client's copy runs the same length.
+            assert!(st.points_held(&def, c, b, Some(t)).is_empty());
+            let mut copy = WorldState::initial(&def);
+            copy.apply(&def, &ch[0]);
+            assert_eq!(copy.base(c, b).hack, st.base(c, b).hack);
+            // The owners retake a point: it stops.
+            let owner = st.base(c, b).owner;
+            let ch = st.points_held(&def, c, b, owner);
+            assert!(matches!(ch[..], [Change::HackStopped { .. }]));
+            assert!(st.base(c, b).hack.is_none());
+            // Held again to the end: captured.
+            st.points_held(&def, c, b, Some(t));
+            let left = crate::capture::POINT_CAPTURE_TIME;
+            assert!(st.tick_hacks(&def, c, left - 1.0).is_empty());
+            let ch = st.tick_hacks(&def, c, 2.0);
+            assert!(matches!(ch[0], Change::BaseCaptured { team, .. } if team == t));
+            break;
+        }
+        assert!(tried > 0, "no points base to take");
     }
 
     #[test]

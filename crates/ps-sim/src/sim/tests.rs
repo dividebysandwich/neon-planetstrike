@@ -296,6 +296,12 @@ fn battle(seed: u64) -> (usize, usize, usize) {
                 hacks += 1;
             }
         }
+        for (b, team) in std::mem::take(&mut sim.majority) {
+            let ch = st.points_held(&def, sim.id, b, team);
+            if matches!(ch.first(), Some(crate::state::Change::HackStarted { .. })) {
+                hacks += 1;
+            }
+        }
         for (_, f) in &sim.fx {
             if let crate::snapshot::Fx::Shot { id, ammo, .. } = f
                 && shot_ids.insert(*id)
@@ -1843,4 +1849,94 @@ fn vehicle_loadouts_choose_the_gun_and_the_defence() {
     sim.vehicles[vi].health = 100.0;
     sim.damage_vehicle(tank, 10.0, crate::types::HAZARD);
     assert!((sim.vehicle(tank).unwrap().health - 92.0).abs() < 1e-3);
+}
+
+/// A capture point base on a continent of some world, with an enemy allowed to take it.
+fn points_setup() -> (ContinentSim, BaseIdx, Team, Team) {
+    for seed in 0..40 {
+        let def = WorldDef::generate(WorldParams { seed, contested: 6 });
+        let st = WorldState::initial(&def);
+        for cd in &def.continents {
+            for (b, site) in cd.bases.iter().enumerate() {
+                let b = b as BaseIdx;
+                let owner = st.base(cd.id, b).owner;
+                let Some(enemy) = Team::ALL
+                    .into_iter()
+                    .find(|&t| owner.is_some() && st.can_hack(&def, cd.id, b, t))
+                else {
+                    continue;
+                };
+                if site.capture != crate::worldgen::Capture::Points {
+                    continue;
+                }
+                let map = Arc::new(ContinentMap::build(Arc::new(cd.clone()), false));
+                let mut sim = ContinentSim::new(cd.id, map);
+                sync(&def, &st, &mut sim);
+                return (sim, b, owner.unwrap(), enemy);
+            }
+        }
+    }
+    panic!("no capture point base to take");
+}
+
+#[test]
+fn standing_on_two_points_reports_a_majority_and_retaking_one_ends_it() {
+    let (mut sim, b, owner, enemy) = points_setup();
+    let pts = sim.map.bases[b as usize].points.clone();
+    assert_eq!(pts.len(), 3);
+    assert!(
+        sim.bases[b as usize]
+            .points
+            .iter()
+            .all(|p| p.owner == Some(owner))
+    );
+    // (The first step tells the server nobody holds two.)
+    // (Its turrets down: nobody shoots.)
+    sim.bases[b as usize].generator = 0.0;
+    let told = |sim: &mut ContinentSim| -> Vec<Option<Team>> {
+        std::mem::take(&mut sim.majority)
+            .into_iter()
+            .filter(|m| m.0 == b)
+            .map(|m| m.1)
+            .collect()
+    };
+    sim.step();
+    assert_eq!(told(&mut sim), vec![None]);
+    sim.add_player(1, "a", enemy, false);
+    sim.add_player(2, "b", enemy, false);
+    sim.spawn_at(1, pts[0].stand, 0.0);
+    sim.spawn_at(2, pts[2].stand, 0.0);
+    let secs = |s: f32| (s / TICK) as usize;
+    for _ in 0..secs(crate::capture::POINT_TIME + 1.0) {
+        sim.step();
+    }
+    let rt = &sim.bases[b as usize];
+    assert_eq!(rt.points[0].owner, Some(enemy));
+    assert_eq!(rt.points[2].owner, Some(enemy));
+    assert_eq!(rt.points[1].owner, Some(owner));
+    assert_eq!(told(&mut sim), vec![Some(enemy)]);
+    assert_eq!(sim.player(1).unwrap().score, progress::CAPTURE_XP);
+    let snap = sim.bases[b as usize].points[0];
+    assert_eq!(snap.by, None);
+    // The owners take A back (its taker gone): the majority is gone.
+    sim.add_player(3, "c", owner, false);
+    sim.spawn_at(
+        1,
+        sim.map.bases[b as usize].center + Vec3::new(0.0, 0.0, 300.0),
+        0.0,
+    );
+    sim.spawn_at(3, pts[0].stand, 0.0);
+    for _ in 0..secs(crate::capture::POINT_TIME + 1.0) {
+        sim.step();
+    }
+    assert_eq!(sim.bases[b as usize].points[0].owner, Some(owner));
+    assert_eq!(told(&mut sim), vec![None]);
+    // The base changing hands: its points are all its new owner's.
+    sim.set_base(b, Some(enemy), None, [false; 3]);
+    assert!(
+        sim.bases[b as usize]
+            .points
+            .iter()
+            .all(|p| p.owner == Some(enemy))
+    );
 }

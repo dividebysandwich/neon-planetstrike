@@ -348,6 +348,18 @@ pub struct BaseSnap {
     /// Terminals hacked (a bit per terminal) by `hacker`'s faction (the latest's).
     pub hacked: u16,
     pub hacker: Option<Team>,
+    /// Its capture points A, B, C (where it's taken at them).
+    pub points: Option<[PointSnap; 3]>,
+}
+
+/// A capture point: who holds it, who is taking it and how far (percent), and whether two
+/// factions are in it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PointSnap {
+    pub owner: Option<Team>,
+    pub by: Option<Team>,
+    pub progress: u8,
+    pub contested: bool,
 }
 
 /// A built structure.

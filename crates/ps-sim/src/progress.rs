@@ -21,7 +21,8 @@ pub enum Award {
     Repair,
     /// Solving an enemy base's console (starting a hack).
     Hack,
-    /// Solving one's own base's console (stopping a hack).
+    /// Solving one's own base's console (stopping a hack), or taking one's own capture point
+    /// back during a capture.
     Defend,
     /// A harvester's load into a silo.
     Delivery,
@@ -37,6 +38,8 @@ pub enum Award {
     Lock,
     /// One's faction won an alert (more for those on the continent).
     Alert,
+    /// Taking a capture point (standing in it).
+    Capture,
 }
 
 impl Award {
@@ -58,6 +61,7 @@ impl Award {
             Award::Spot => "SPOT BONUS",
             Award::Lock => "CONTINENT LOCKED",
             Award::Alert => "ALERT WON",
+            Award::Capture => "POINT CAPTURED",
         }
     }
 }
@@ -67,6 +71,8 @@ pub const HEADSHOT_XP: u32 = 25;
 pub const ASSIST_XP: u32 = 50;
 pub const REVIVE_XP: u32 = 75;
 pub const HACK_XP: u32 = 250;
+/// A capture point taken (for each one in it).
+pub const CAPTURE_XP: u32 = 100;
 pub const SPAWN_XP: u32 = 10;
 pub const STRUCTURE_XP: u32 = 100;
 pub const BUILD_XP: u32 = 25;

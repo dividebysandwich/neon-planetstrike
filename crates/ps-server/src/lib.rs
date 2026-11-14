@@ -858,6 +858,17 @@ impl Hub {
                     self.changed(ch);
                 }
             }
+            FromContinent::Majority {
+                continent,
+                base,
+                team,
+            } => {
+                let ch = self.state.points_held(&self.def, continent, base, team);
+                if !ch.is_empty() {
+                    self.log(&format!("capture points: {:?}", ch[0]));
+                    self.changed(ch);
+                }
+            }
             FromContinent::Transferred { player, to } => {
                 let (c, at) = match to {
                     TransferTo::Spawn(c, b) => (c, Arrive::Base(b)),
