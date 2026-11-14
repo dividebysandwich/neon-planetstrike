@@ -69,6 +69,56 @@ def grip(g):
              -0.0035, 0.0035)
 
 
+def osec(z, hx, y0, y1, c=0.006, x=0.0):
+    """An octagonal section (a rectangle x +- hx, y0..y1 with chamfered corners) at z."""
+    return [(x + hx, y0 + c, z), (x + hx, y1 - c, z), (x + hx - c, y1, z), (x - hx + c, y1, z),
+            (x - hx, y1 - c, z), (x - hx, y0 + c, z), (x - hx + c, y0, z), (x + hx - c, y0, z)]
+
+
+def hull(g, secs, mat="body", cap0=True, cap1=True):
+    """A body lofted forward (-Z) through sections (z, hx, y0, y1[, chamfer[, x]]): receivers,
+    stocks and handguards with real width, taper and chamfered edges."""
+    first = mat if isinstance(mat, str) else mat[0]
+    last = mat if isinstance(mat, str) else mat[-1]
+    L.loft(g, [osec(*s) for s in secs], NZ, mats=mat, cap0=first if cap0 else None,
+           cap1=last if cap1 else None)
+
+
+def ysec(y, hx, z0, z1, c=0.005):
+    return [(hx, y, z0 + c), (hx, y, z1 - c), (hx - c, y, z1), (-hx + c, y, z1),
+            (-hx, y, z1 - c), (-hx, y, z0 + c), (-hx + c, y, z0), (hx - c, y, z0)]
+
+
+def drop(g, secs, mat="polymer"):
+    """A body lofted downward through sections (y, hx, z0, z1[, chamfer]): magazines, fore
+    grips."""
+    L.loft(g, [ysec(*s) for s in secs], NY, mats=mat, cap0=mat, cap1=mat)
+
+
+def side_rect(s, x, z0, z1, y0, y1):
+    return [(s * x, y0, z0), (s * x, y0, z1), (s * x, y1, z1), (s * x, y1, z0)]
+
+
+def sbox(g, a, b, mat="body"):
+    """A box between two opposite corners, in any order."""
+    L.box(g, tuple(map(min, a, b)), tuple(map(max, a, b)), mat=mat)
+
+
+def rail(g, y, z0, z1, hx=0.009, pitch=0.02, mat="metal"):
+    """An accessory rail along the top at height y from z0 (front) to z1: a bar with teeth."""
+    L.box(g, (-hx * 0.75, y, z0), (hx * 0.75, y + 0.004, z1), mat=mat)
+    z = z0 + 0.003
+    while z + pitch * 0.55 < z1:
+        L.box(g, (-hx, y + 0.004, z), (hx, y + 0.009, z + pitch * 0.55), mat=mat)
+        z += pitch
+
+
+def tz(g, x, y, z0, z1, r, n=8, mat="metal", cap0=True, cap1=True, rv=None):
+    """A tube along the bore from z0 (back) forward to z1."""
+    P.lathe(g, (x, y, z0), NZ, [(0, r), (z0 - z1, r)], n=n, mats=mat,
+            cap0=mat if cap0 else None, cap1=mat if cap1 else None, rv=rv)
+
+
 def side_line(g, xh, pts_zy, w=0.005):
     """Team line on both side planes x = +-xh through (z, y) points."""
     for s in (-1, 1):
@@ -79,12 +129,37 @@ def top_line(g, y, x, z0, z1, w=0.005):
     P.accent(g, [(x, y, z0), (x, y, z1)], Y, w, glow=0.0, h=0.0015)
 
 
-def barrel(g, z0, yc, prof, n=8, ring_at=(), white_tip=False):
-    """Lathe along -Z from (0, yc, z0); prof [(t, r)] with a muzzle cap at the end."""
-    P.lathe(g, (0, yc, z0), NZ, prof, n=n, cap0="body", cap1=LIGHT if white_tip else "accent")
+def barrel(g, z0, yc, prof, n=12, ring_at=(), white_tip=False, mat="metal", x=0.0):
+    """Lathe along -Z from (x, yc, z0); prof [(t, r)] with a lit muzzle cap at the end."""
+    P.lathe(g, (x, yc, z0), NZ, prof, n=n, mats=mat, cap0=mat if isinstance(mat, str) else mat[0],
+            cap1=LIGHT if white_tip else "accent")
     for t, r in ring_at:
-        P.lathe(g, (0, yc, z0), NZ, [(t, r), (t + 0.006, r)], n=n, mats="accent", cap0=None,
+        P.lathe(g, (x, yc, z0), NZ, [(t, r), (t + 0.006, r)], n=n, mats="accent", cap0=None,
                 cap1=None)
+
+
+def butt(g, z, hx, y0, y1, t=0.014):
+    """A rubber butt pad on the back of a stock."""
+    P.bevel_box(g, (-hx, y0, z), (hx, y1, z + t), 0.004, mat="rubber")
+
+
+def lens(g, c, axis, r, n=12, ring=True):
+    """A glass lens facing along `axis` at c, a team ring round it."""
+    g.face(P.circle(c, axis, r, n), "glass", want=axis)
+    if ring:
+        P.accent(g, P.circle(c, axis, r * 1.02, n), axis, r * 0.18, closed=True, glow=0.0,
+                 h=0.001)
+
+
+def flat(g, o, n, along, hw, hl, h, mat):
+    """A small plate centred on o on the face with normal n: half length hl along `along`,
+    half width hw across it (ports, perforations, cells on round bodies)."""
+    n = L.norm(n)
+    a = L.norm(along)
+    t = L.cross(n, a)
+    q = [L.add(o, L.add(L.mul(t, -hw), L.mul(a, -hl))), L.add(o, L.add(L.mul(t, hw), L.mul(a, -hl))),
+         L.add(o, L.add(L.mul(t, hw), L.mul(a, hl))), L.add(o, L.add(L.mul(t, -hw), L.mul(a, hl)))]
+    P.plate(g, q, n, h, mat)
 
 
 def muzzle(name, pos):
@@ -92,228 +167,579 @@ def muzzle(name, pos):
 
 
 # ---------------------------------------------------------------------------------------------
+# The infantry's guns.
 
 def rifle():
+    """Pulse rifle: an armoured upper over a polymer lower and vented handguard, a railed
+    top with a holo sight, a lit cell magazine."""
     g = L.Geo()
     grip(g)
-    xh = 0.022
-    L.prism_x(g, [(-0.14, 0.05), (0.1, 0.05), (0.12, 0.07), (0.12, 0.112), (-0.14, 0.112)],
-              -xh, xh)  # receiver
-    L.prism_x(g, [(0.1, 0.06), (0.27, 0.0), (0.27, 0.105), (0.12, 0.112)], -0.017, 0.017)  # stock
-    L.prism_x(g, [(-0.33, 0.06), (-0.14, 0.055), (-0.14, 0.112), (-0.33, 0.108)], -0.02, 0.02)
-    L.prism_x(g, [(-0.16, 0.055), (-0.115, 0.055), (-0.125, -0.06), (-0.17, -0.055)], -0.013,
-              0.013)  # magazine
-    L.box(g, (-0.008, 0.112, -0.3), (0.008, 0.122, 0.08))  # rail
-    for z in (-0.25, -0.15, -0.05, 0.05):
-        L.box(g, (-0.009, 0.122, z), (0.009, 0.126, z + 0.012), mat="accent")
-    barrel(g, -0.33, 0.085, [(0, 0.013), (0.07, 0.012), (0.07, 0.018), (0.1, 0.018)],
-           ring_at=((0.03, 0.0135),))
-    side_line(g, xh, [(-0.13, 0.095), (0.09, 0.095)])
-    side_line(g, 0.02, [(-0.32, 0.084), (-0.15, 0.084)], 0.004)
-    side_line(g, 0.017, [(0.12, 0.08), (0.25, 0.04)], 0.004)
+    hull(g, [(0.1, 0.019, 0.048, 0.086), (-0.15, 0.019, 0.048, 0.086)], "polymer")  # lower
+    hull(g, [(0.125, 0.021, 0.078, 0.11, 0.008), (0.1, 0.024, 0.076, 0.116, 0.008),
+             (-0.13, 0.024, 0.076, 0.116, 0.008), (-0.165, 0.02, 0.08, 0.112, 0.008)], "armor")
+    # Stock: tapering back, a rubber pad, a cheek rest on top.
+    hull(g, [(0.125, 0.017, 0.056, 0.108), (0.2, 0.016, 0.026, 0.106), (0.262, 0.018, 0.004, 0.106)],
+         "polymer")
+    butt(g, 0.262, 0.019, 0.0, 0.11)
+    P.bevel_box(g, (-0.012, 0.104, 0.14), (0.012, 0.114, 0.235), 0.004, mat="rubber")
+    # Handguard, its vents, the barrel with its muzzle device.
+    hull(g, [(-0.15, 0.022, 0.05, 0.112, 0.008), (-0.3, 0.02, 0.054, 0.108, 0.008),
+             (-0.335, 0.016, 0.064, 0.104, 0.007)], "polymer")
+    for s in (-1, 1):
+        P.vent(g, (s * 0.0212, 0.092, -0.235), (s, 0, 0), 0.026, 0.11, slats=6, depth=0.004,
+               mat="polymer", mat_in="metal", up=NZ, frame=0.004)
+        P.plate(g, side_rect(s, 0.0235, -0.12, 0.085, 0.082, 0.111), (s, 0, 0), 0.003, "armor",
+                bevel=0.004)
+        P.bolt_row(g, (s * 0.0265, 0.087, -0.11), (s * 0.0265, 0.087, 0.075), (s, 0, 0), 4,
+                   r=0.0035, h=0.002, ends=True)
+        P.accent(g, [(s * 0.0265, 0.102, -0.11), (s * 0.0265, 0.102, 0.075)], (s, 0, 0), 0.005,
+                 glow=0.0, h=0.0015)
+        P.accent(g, [(s * 0.0212, 0.064, -0.3), (s * 0.0218, 0.064, -0.17)], (s, 0, 0), 0.004,
+                 glow=0.0, h=0.0015)
+        P.accent(g, [(s * 0.0172, 0.07, 0.14), (s * 0.0164, 0.05, 0.24)], (s, 0, 0), 0.004,
+                 glow=0.0, h=0.0015)
+    P.panel_inset(g, side_rect(1, 0.0265, -0.06, 0.0, 0.09, 0.106), X, h=0.002, rim=0.003,
+                  mat="metal", mat_in="body")  # ejection port
+    L.box(g, (0.0265, 0.094, 0.02), (0.036, 0.102, 0.04), mat="metal")  # charging handle
+    barrel(g, -0.335, 0.085, [(0, 0.0125), (0.045, 0.0115), (0.045, 0.017), (0.052, 0.019),
+                              (0.09, 0.019), (0.095, 0.016)], ring_at=((0.02, 0.013),))
+    for t in (0.06, 0.074):  # muzzle device ports
+        for s in (-1, 1):
+            sbox(g, (s * 0.0165, 0.08, -0.335 - t - 0.008), (s * 0.02, 0.09, -0.335 - t), "heat")
+    tz(g, 0, 0.106, -0.165, -0.3, 0.006, n=6)  # gas tube over the barrel
+    # Rail and holo sight: a hooded pane of glass with the team's reticle bar.
+    rail(g, 0.116, -0.3, 0.09)
+    P.bevel_box(g, (-0.012, 0.125, -0.04), (0.012, 0.135, 0.03), 0.003, mat="metal")
+    for s in (-1, 1):
+        sbox(g, (s * 0.011, 0.135, -0.03), (s * 0.014, 0.168, -0.012), "armor")
+    L.box(g, (-0.014, 0.168, -0.03), (0.014, 0.171, -0.012), mat="armor")
+    L.box(g, (-0.011, 0.136, -0.022), (0.011, 0.168, -0.02), mat="glass")
+    P.accent(g, [(-0.004, 0.152, -0.0199), (0.004, 0.152, -0.0199)], Z, 0.003, glow=0.0,
+             h=0.0005)
+    L.box(g, (-0.004, 0.125, -0.29), (0.004, 0.14, -0.28), mat="metal")  # front post
+    # Magazine: a power cell with a lit window, a metal floor plate.
+    drop(g, [(0.05, 0.013, -0.168, -0.112), (-0.055, 0.013, -0.178, -0.122)])
+    P.bevel_box(g, (-0.015, -0.064, -0.182), (0.015, -0.055, -0.12), 0.003, mat="metal")
+    for s in (-1, 1):
+        P.accent(g, [(s * 0.013, 0.03, -0.142), (s * 0.013, -0.04, -0.149)], (s, 0, 0), 0.012,
+                 glow=0.0, h=0.0015)
     muzzle("rifle", (0, 0.085, -0.43))
     return g
 
 
 def scatter():
+    """Scattergun: a slab receiver, a heat-shielded barrel flaring to a wide slotted muzzle,
+    a ribbed pump on the magazine tube, shells in a side saddle."""
     g = L.Geo()
     grip(g)
-    xh = 0.026
-    L.prism_x(g, [(-0.1, 0.05), (0.09, 0.05), (0.1, 0.065), (0.1, 0.12), (-0.1, 0.12)], -xh, xh)
-    L.prism_x(g, [(0.09, 0.055), (0.22, 0.01), (0.22, 0.1), (0.1, 0.12)], -0.018, 0.018)
-
-    def rs(z, p):
-        hx, y0, y1 = p
-        return [(-hx, y0, z), (hx, y0, z), (hx, y1, z), (-hx, y1, z)]
-    rings = [rs(z, p) for z, p in ((-0.1, (0.026, 0.06, 0.116)), (-0.3, (0.028, 0.062, 0.114)),
-                                   (-0.38, (0.06, 0.05, 0.126)))]
-    L.loft(g, rings, NZ, cap0="body", cap1="body")
-    # Muzzle face: three wide team slots.
+    hull(g, [(0.1, 0.022, 0.05, 0.118, 0.01), (0.07, 0.027, 0.05, 0.122, 0.01),
+             (-0.1, 0.027, 0.05, 0.122, 0.01)], "armor")
+    hull(g, [(0.1, 0.019, 0.052, 0.114), (0.16, 0.017, 0.03, 0.108), (0.212, 0.019, 0.01, 0.104)],
+         "polymer")
+    butt(g, 0.212, 0.02, 0.006, 0.108)
+    # Barrel shroud flaring to the muzzle; the muzzle face's three wide team slots.
+    hull(g, [(-0.1, 0.026, 0.062, 0.116, 0.01), (-0.3, 0.028, 0.064, 0.114, 0.01),
+             (-0.36, 0.055, 0.052, 0.124, 0.01), (-0.38, 0.06, 0.05, 0.126, 0.01)],
+         ["body", "body", "metal"])
     for y in (0.068, 0.088, 0.108):
         P.disc(g, [(-0.048, y - 0.005, -0.38), (0.048, y - 0.005, -0.38),
                    (0.048, y + 0.005, -0.38), (-0.048, y + 0.005, -0.38)], NZ, glow=0.0,
                h=0.0015)
-    # Pump.
-    L.box(g, (-0.022, 0.03, -0.27), (0.022, 0.06, -0.14))
-    for z in (-0.25, -0.21, -0.17):
-        L.box(g, (-0.023, 0.032, z), (0.023, 0.058, z + 0.01), mat="accent")
-    side_line(g, xh, [(-0.09, 0.1), (0.09, 0.1)])
+    # Heat shield over the barrel: a raised plate with a row of scorched slots.
+    L.box(g, (-0.02, 0.114, -0.29), (0.02, 0.121, -0.11), mat="metal")
+    for i in range(6):
+        z = -0.27 + i * 0.028
+        L.box(g, (-0.011, 0.121, z), (0.011, 0.1222, z + 0.014), mat="heat")
+    # Magazine tube and pump.
+    tz(g, 0, 0.046, -0.1, -0.31, 0.013, n=8)
+    hull(g, [(-0.135, 0.021, 0.03, 0.062, 0.008), (-0.15, 0.025, 0.026, 0.064, 0.008),
+             (-0.26, 0.025, 0.026, 0.064, 0.008), (-0.275, 0.021, 0.03, 0.062, 0.008)], "polymer")
+    for z in (-0.25, -0.225, -0.2, -0.175):
+        L.box(g, (-0.0262, 0.036, z), (0.0262, 0.056, z + 0.01), mat="rubber")
     for s in (-1, 1):
-        q = (rings[1][1], rings[1][2], rings[2][2], rings[2][1]) if s > 0 else \
-            (rings[1][3], rings[1][0], rings[2][0], rings[2][3])
-        n = P.quad_normal(q, (s, 0, -0.3))
-        P.accent(g, [P.on_quad(*q, 0.5, 0.1), P.on_quad(*q, 0.5, 0.9)], n, 0.006, glow=0.0,
-                 h=0.0015)
-    top_line(g, 0.12, 0, -0.09, 0.08)
+        tz(g, s * 0.021, 0.07, -0.1, -0.2, 0.004, n=6)  # action bars
+        P.accent(g, [(s * 0.0272, 0.1, -0.09), (s * 0.0272, 0.1, 0.06)], (s, 0, 0), 0.005,
+                 glow=0.0, h=0.0015)
+        P.bolt_row(g, (s * 0.027, 0.064, -0.085), (s * 0.027, 0.064, 0.055), (s, 0, 0), 3,
+                   r=0.004, h=0.002, ends=True)
+    # Shell saddle on the left: four shells, metal heads up, team bodies.
+    L.box(g, (-0.033, 0.072, -0.07), (-0.027, 0.092, 0.03), mat="polymer")
+    for i in range(4):
+        z = -0.055 + i * 0.024
+        P.lathe(g, (-0.041, 0.064, z), Y, [(0, 0.008), (0.03, 0.008)], n=8, mats="paint",
+                cap0="paint", cap1=None)
+        P.lathe(g, (-0.041, 0.094, z), Y, [(0, 0.0088), (0.006, 0.0088)], n=8, mats="metal",
+                cap0="metal", cap1="metal")
+    P.panel_inset(g, side_rect(1, 0.027, -0.06, 0.01, 0.084, 0.108), X, h=0.002, rim=0.003,
+                  mat="metal", mat_in="body")
+    # Sights and the top line.
+    L.box(g, (-0.008, 0.122, 0.04), (0.008, 0.13, 0.06), mat="metal")
+    L.box(g, (-0.003, 0.121, -0.3), (0.003, 0.13, -0.29), mat="metal")
+    top_line(g, 0.122, 0, -0.09, 0.03)
+    for s in (-1, 1):
+        nrm = L.norm((s * 0.06, 0, -0.027))
+        q = [(s * 0.0305, 0.089, -0.305), (s * 0.053, 0.088, -0.355)]
+        P.accent(g, [L.add(p, L.mul(nrm, 0.0005)) for p in q], nrm, 0.006, glow=0.0, h=0.0015)
     muzzle("scatter", (0, 0.088, -0.38))
     return g
 
 
 def lance():
+    """Prism lance: a long fluted barrel with a slotted brake, a big scope with turrets, a
+    skeleton stock with a cheek riser, a folded bipod."""
     g = L.Geo()
     grip(g)
-    xh = 0.02
-    L.prism_x(g, [(-0.18, 0.05), (0.12, 0.05), (0.13, 0.07), (0.13, 0.11), (-0.18, 0.11)],
-              -xh, xh)
-    # Skeleton stock: upper bar, butt plate, lower strut.
-    L.box(g, (-0.012, 0.09, 0.12), (0.012, 0.108, 0.3))
-    L.box(g, (-0.016, 0.0, 0.29), (0.016, 0.115, 0.32))
-    L.band_x(g, [(0.12, 0.055), (0.29, 0.01)], 0.014, -0.01, 0.01)
-    L.prism_x(g, [(-0.4, 0.062), (-0.18, 0.058), (-0.18, 0.108), (-0.4, 0.104)], -0.018, 0.018)
-    L.prism_x(g, [(-0.12, 0.05), (-0.09, 0.05), (-0.095, -0.02), (-0.125, -0.02)], -0.012,
-              0.012)  # magazine
-    barrel(g, -0.4, 0.085, [(0, 0.011), (0.25, 0.01), (0.25, 0.015), (0.28, 0.015)],
-           ring_at=((0.1, 0.0115), (0.18, 0.0112)))
-    # Scope.
+    hull(g, [(0.13, 0.017, 0.056, 0.106, 0.008), (0.1, 0.02, 0.05, 0.11, 0.008),
+             (-0.18, 0.02, 0.05, 0.11, 0.008)], "armor")
+    # Skeleton stock: upper bar, lower strut, butt plate and pad, cheek riser.
+    hull(g, [(0.29, 0.011, 0.088, 0.108, 0.004), (0.13, 0.011, 0.088, 0.108, 0.004)], "polymer")
+    L.band_x(g, [(0.125, 0.058), (0.29, 0.014)], 0.014, -0.009, 0.009, mat="polymer")
+    P.bevel_box(g, (-0.015, 0.0, 0.288), (0.015, 0.114, 0.306), 0.004, mat="polymer")
+    butt(g, 0.306, 0.016, 0.0, 0.116)
+    P.bevel_box(g, (-0.013, 0.108, 0.15), (0.013, 0.126, 0.25), 0.005, mat="rubber")
+    # Handguard with slots, then the barrel.
+    hull(g, [(-0.18, 0.018, 0.058, 0.108, 0.008), (-0.38, 0.016, 0.062, 0.104, 0.008),
+             (-0.405, 0.013, 0.068, 0.1, 0.006)], "polymer")
+    for s in (-1, 1):
+        for i in range(4):
+            z = -0.36 + i * 0.045
+            P.plate(g, side_rect(s, 0.0162, z, z + 0.03, 0.078, 0.092), (s, 0, 0), 0.0025,
+                    "metal", bevel=0.003)
+        P.plate(g, side_rect(s, 0.0195, -0.17, 0.09, 0.056, 0.104), (s, 0, 0), 0.003, "armor",
+                bevel=0.005)
+        P.accent(g, [(s * 0.0225, 0.094, -0.16), (s * 0.0225, 0.094, 0.08)], (s, 0, 0), 0.005,
+                 glow=0.0, h=0.0015)
+        P.bolt_row(g, (s * 0.0225, 0.064, -0.16), (s * 0.0225, 0.064, 0.08), (s, 0, 0), 5,
+                   r=0.003, h=0.002, ends=True)
+    barrel(g, -0.405, 0.085, [(0, 0.012), (0.03, 0.0105), (0.22, 0.0095), (0.22, 0.015),
+                              (0.228, 0.017), (0.27, 0.017), (0.275, 0.014)],
+           ring_at=((0.06, 0.0108), (0.19, 0.0102)))
+    for k in range(4):  # flutes: dark grooves along the barrel
+        a = math.pi / 4 + k * math.pi / 2
+        c, s_ = math.cos(a), math.sin(a)
+        flat(g, (c * 0.0094, 0.085 + s_ * 0.0094, -0.53), (c, s_, 0), Z, 0.0025, 0.05, 0.0012,
+             "rubber")
+    for t in (0.236, 0.254):  # the brake's ports
+        for s in (-1, 1):
+            sbox(g, (s * 0.0145, 0.079, -0.405 - t - 0.01), (s * 0.018, 0.091, -0.405 - t), "heat")
+    # Folded bipod under the barrel.
+    L.box(g, (-0.012, 0.066, -0.425), (0.012, 0.074, -0.405), mat="metal")
+    for s in (-1, 1):
+        tz(g, s * 0.009, 0.066, -0.41, -0.56, 0.0035, n=6)
+        sbox(g, (s * 0.005, 0.06, -0.572), (s * 0.013, 0.07, -0.556), "rubber")
+    # Scope: mounts on a rail, a tube with a wide objective, glass both ends, two turrets.
+    rail(g, 0.11, -0.16, 0.1)
     for z in (-0.12, 0.0):
-        L.box(g, (-0.006, 0.11, z - 0.008), (0.006, 0.138, z + 0.008))
-    sy = 0.15
-    P.lathe(g, (0, sy, 0.07), NZ, [(0, 0.016), (0.03, 0.016), (0.05, 0.013), (0.2, 0.013),
-                                    (0.23, 0.022), (0.28, 0.022)], n=8, cap0="accent",
-            cap1="accent")
-    P.lathe(g, (0, sy, 0.07), NZ, [(0.1, 0.0137), (0.108, 0.0137)], n=8, mats="accent",
-            cap0=None, cap1=None)
-    side_line(g, xh, [(-0.17, 0.095), (0.12, 0.095)])
-    side_line(g, 0.018, [(-0.39, 0.075), (-0.19, 0.075)], 0.004)
+        P.bevel_box(g, (-0.007, 0.119, z - 0.01), (0.007, 0.14, z + 0.01), 0.002, mat="metal")
+        P.lathe(g, (0, 0.152, z + 0.01), NZ, [(0, 0.0165), (0.02, 0.0165)], n=12, mats="metal",
+                cap0="metal", cap1="metal")
+    sy = 0.152
+    P.lathe(g, (0, sy, 0.08), NZ, [(0, 0.014), (0.004, 0.017), (0.035, 0.017), (0.05, 0.0135),
+                                    (0.2, 0.0135), (0.235, 0.023), (0.29, 0.023), (0.295, 0.021)],
+            n=12, mats="armor", cap0="armor", cap1="armor")
+    lens(g, (0, sy, -0.2152), NZ, 0.0195)
+    lens(g, (0, sy, 0.0802), Z, 0.013)
+    P.lathe(g, (0, sy + 0.013, -0.045), Y, [(0, 0.009), (0.012, 0.009), (0.014, 0.0075)], n=8,
+            mats="metal", cap0=None, cap1="accent")
+    P.lathe(g, (0.013, sy, -0.045), X, [(0, 0.009), (0.012, 0.009), (0.014, 0.0075)], n=8,
+            mats="metal", cap0=None, cap1="accent")
+    drop(g, [(0.05, 0.012, -0.13, -0.085), (-0.03, 0.012, -0.136, -0.091)])
+    P.bevel_box(g, (-0.014, -0.038, -0.14), (0.014, -0.03, -0.088), 0.003, mat="metal")
     muzzle("lance", (0, 0.085, -0.68))
     return g
 
 
+def launcher_grip(g):
+    """The launchers' mount over the grip and their fore grip (a bar from (y 0.09, z -0.3)
+    down to (-0.02, -0.32): `support` in src/actors.rs)."""
+    hull(g, [(0.07, 0.02, 0.05, 0.09), (-0.13, 0.02, 0.05, 0.09)], "armor")
+    L.band_x(g, [(-0.3, 0.09), (-0.32, -0.02)], 0.03, -0.014, 0.014, mat="rubber")
+    for y in (0.06, 0.04, 0.02, 0.0):
+        z = -0.3055 - (0.09 - y) * 0.02 / 0.11
+        L.box(g, (-0.0152, y - 0.004, z - 0.0162), (0.0152, y + 0.004, z + 0.0162), mat="metal")
+    for s in (-1, 1):
+        P.bolt_row(g, (s * 0.02, 0.07, -0.11), (s * 0.02, 0.07, 0.05), (s, 0, 0), 4,
+                   r=0.004, h=0.002, ends=True)
+
+
 def striker():
+    """Striker: a shoulder rocket tube with a scorched blast cone, a padded rest, a boxed
+    sight wired to the tube, a fore grip."""
     g = L.Geo()
     grip(g)
+    launcher_grip(g)
     yc = 0.15
-    L.box(g, (-0.02, 0.05, -0.12), (0.02, 0.085, 0.06))  # mount between grip and tube
-    P.lathe(g, (0, yc, 0.48), NZ, [(0, 0.06), (0.03, 0.09), (0.1, 0.09), (0.12, 0.072),
-                                    (0.98, 0.072), (1.0, 0.088), (1.1, 0.088), (1.1, 0.06),
-                                    (1.06, 0.06)], n=10, cap0="body", cap1=LIGHT)
-    for t in (0.05, 0.3, 1.04):
-        P.lathe(g, (0, yc, 0.48), NZ, [(t, 0.092 if t < 0.1 or t > 1 else 0.075),
-                                        (t + 0.02, 0.092 if t < 0.1 or t > 1 else 0.075)],
-                n=10, mats="accent", cap0=None, cap1=None)
-    # Fore grip.
-    L.band_x(g, [(-0.3, 0.09), (-0.32, -0.02)], 0.03, -0.014, 0.014)
-    # Sight box on the left.
-    L.box(g, (-0.11, 0.17, -0.2), (-0.065, 0.215, -0.08))
-    P.disc(g, [(-0.105, 0.177, -0.2), (-0.07, 0.177, -0.2), (-0.07, 0.208, -0.2),
-               (-0.105, 0.208, -0.2)], NZ, glow=0.0, h=0.0015)
-    # Team line along the tube's top flat.
-    yt = yc + 0.072 * math.cos(math.pi / 10)
-    P.accent(g, [(0, yt, 0.32), (0, yt, -0.45)], Y, 0.008, glow=0.0, h=0.0015)
+    n = 16
+    P.lathe(g, (0, yc, 0.48), NZ, [(0, 0.058), (0.03, 0.09), (0.1, 0.09), (0.12, 0.072),
+                                    (0.98, 0.072), (1.0, 0.088), (1.1, 0.088), (1.1, 0.062),
+                                    (1.06, 0.062)], n=n,
+            mats=["heat", "heat", "heat", "body", "armor", "armor", "armor", "metal"],
+            cap0="heat", cap1=LIGHT)
+    for t, r in ((0.05, 0.092), (1.04, 0.09), (0.3, 0.0745), (0.9, 0.0745)):
+        P.lathe(g, (0, yc, 0.48), NZ, [(t, r), (t + 0.016, r)], n=n, mats="accent", cap0=None,
+                cap1=None)
+    for t in (0.2, 0.42, 0.66):  # clamp bands
+        P.lathe(g, (0, yc, 0.48), NZ, [(t, 0.0755), (t + 0.03, 0.0755)], n=n, mats="metal",
+                cap0="metal", cap1="metal")
+    for k in range(8):  # the blast cone's vanes
+        a = 2 * math.pi * k / 8
+        c, s_ = math.cos(a), math.sin(a)
+        flat(g, (c * 0.089, yc + s_ * 0.089, 0.415), (c, s_, 0), Z, 0.008, 0.03, 0.007, "metal")
+    # Shoulder rest under the rear of the tube.
+    P.bevel_box(g, (-0.035, 0.05, 0.16), (0.035, 0.085, 0.34), 0.008, mat="rubber")
+    L.box(g, (-0.02, 0.07, 0.07), (0.02, 0.085, 0.17), mat="armor")
+    # Sight box on the left with a glass lens, on a bracket, its cable to the tube.
+    L.box(g, (-0.085, 0.15, -0.17), (-0.06, 0.17, -0.11), mat="metal")
+    P.bevel_box(g, (-0.125, 0.165, -0.21), (-0.07, 0.222, -0.07), 0.006, mat="armor")
+    g.face([(-0.118, 0.172, -0.2102), (-0.077, 0.172, -0.2102), (-0.077, 0.215, -0.2102),
+            (-0.118, 0.215, -0.2102)], "glass", want=NZ)
+    P.accent(g, [(-0.118, 0.172, -0.2104), (-0.077, 0.172, -0.2104), (-0.077, 0.215, -0.2104),
+                 (-0.118, 0.215, -0.2104)], NZ, 0.004, closed=True, glow=0.0, h=0.001)
+    P.hose(g, [(-0.097, 0.19, -0.07), (-0.097, 0.2, -0.02), (-0.07, 0.215, 0.06),
+               (-0.045, 0.215, 0.14)], 0.005, n=6, collars=(0, 3))
+    # Team line along the tube's top.
+    yt = yc + 0.072 * math.cos(math.pi / n)
+    P.accent(g, [(0, yt, 0.16), (0, yt, -0.36)], Y, 0.008, glow=0.0, h=0.0015)
     muzzle("striker", (0, yc, -0.62))
     return g
 
 
 def skyhook():
-    """The anti-air launcher: a boxy tube with a seeker lens ahead and a sensor fin on top."""
+    """Skyhook: a boxy anti-air launcher, a glass seeker in a ringed mouth, a sensor fin, side
+    cooling vents and armour panels."""
     g = L.Geo()
     grip(g)
+    launcher_grip(g)
     yc = 0.15
-    L.box(g, (-0.02, 0.05, -0.12), (0.02, 0.085, 0.06))
-    L.box(g, (-0.085, yc - 0.075, -0.55), (0.085, yc + 0.075, 0.45))
-    # Seeker: a ring and a white lens at the mouth.
-    P.lathe(g, (0, yc, -0.55), NZ, [(0, 0.07), (0.05, 0.07)], n=10, cap0=None, cap1=LIGHT)
-    P.accent(g, P.circle((0, yc, -0.6), NZ, 0.075, 10), NZ, 0.008, closed=True, glow=0.0,
+    hull(g, [(0.45, 0.07, yc - 0.062, yc + 0.062, 0.02), (0.42, 0.085, yc - 0.075, yc + 0.075, 0.022),
+             (-0.5, 0.085, yc - 0.075, yc + 0.075, 0.022), (-0.55, 0.078, yc - 0.068, yc + 0.068, 0.02)],
+         ["heat", "body", "armor"])
+    # Seeker: a ringed mouth, a dark glass dome with a white eye.
+    P.lathe(g, (0, yc, -0.55), NZ, [(0, 0.066), (0.03, 0.07), (0.05, 0.066)], n=16, mats="metal",
+            cap0=None, cap1=None)
+    P.lathe(g, (0, yc, -0.555), NZ, [(0, 0.062), (0.025, 0.05), (0.04, 0.028)], n=16,
+            mats="glass", cap0=None, cap1=LIGHT)
+    P.accent(g, P.circle((0, yc, -0.6), NZ, 0.068, 16), NZ, 0.006, closed=True, glow=0.0,
              h=0.0015)
-    # Team lines along both sides, and round the back.
     for s in (-1, 1):
-        P.accent(g, [(s * 0.085, yc, 0.4), (s * 0.085, yc, -0.5)], (s, 0, 0), 0.01, glow=0.0,
-                 h=0.0015)
-    P.accent(g, [(-0.07, yc - 0.06, 0.45), (0.07, yc - 0.06, 0.45), (0.07, yc + 0.06, 0.45),
-                 (-0.07, yc + 0.06, 0.45)], Z, 0.008, closed=True, glow=0.0, h=0.0015)
-    # Sensor fin on top.
-    P.extrude(g, [(0, yc + 0.075, -0.3), (0, yc + 0.075, -0.05), (0, yc + 0.13, -0.08),
-                  (0, yc + 0.13, -0.24)], (0.01, 0, 0))
-    P.white(g, [(0.011, yc + 0.11, -0.22), (0.011, yc + 0.11, -0.1)], X, 0.008, glow=0.0)
-    # Fore grip.
-    L.band_x(g, [(-0.3, 0.075), (-0.32, -0.02)], 0.03, -0.014, 0.014)
+        P.panel_inset(g, side_rect(s, 0.085, -0.46, -0.16, yc - 0.045, yc + 0.045), (s, 0, 0),
+                      h=0.004, rim=0.008, mat="armor", mat_in="body")
+        P.accent(g, [(s * 0.0865, yc, -0.44), (s * 0.0865, yc, -0.18)], (s, 0, 0), 0.01,
+                 glow=0.0, h=0.0015)
+        P.vent(g, (s * 0.085, yc, 0.2), (s, 0, 0), 0.26, 0.07, slats=5, depth=0.008,
+               mat="metal", mat_in="rubber", frame=0.008)
+        P.bolt_row(g, (s * 0.085, yc + 0.045, -0.1), (s * 0.085, yc + 0.045, 0.38), (s, 0, 0), 6,
+                   r=0.004, h=0.002, ends=True)
+    P.accent(g, [(-0.05, yc - 0.042, 0.45), (0.05, yc - 0.042, 0.45), (0.05, yc + 0.042, 0.45),
+                 (-0.05, yc + 0.042, 0.45)], Z, 0.008, closed=True, glow=0.0, h=0.0015)
+    # Sensor fin on top, a rail behind it, the shoulder rest.
+    P.extrude(g, [(-0.006, yc + 0.075, -0.3), (-0.006, yc + 0.075, -0.05),
+                  (-0.006, yc + 0.135, -0.09), (-0.006, yc + 0.135, -0.24)], (0.012, 0, 0),
+              mat="armor")
+    for s in (-1, 1):
+        P.white(g, [(s * 0.0062, yc + 0.11, -0.22), (s * 0.0062, yc + 0.11, -0.1)], (s, 0, 0),
+                0.008, glow=0.0)
+    rail(g, yc + 0.075, 0.0, 0.3, hx=0.011)
+    P.bevel_box(g, (-0.035, 0.045, 0.16), (0.035, 0.076, 0.34), 0.008, mat="rubber")
+    P.hose(g, [(0.035, yc + 0.075, -0.04), (0.045, yc + 0.095, 0.0), (0.045, yc + 0.095, 0.3),
+               (0.035, yc + 0.07, 0.36)], 0.006, n=6, collars=(1, 2))
     muzzle("skyhook", (0, yc, -0.6))
     return g
 
 
 def pistol():
+    """Sidearm: a serrated slide over a polymer frame, a lit barrel tip, a lamp under the
+    dust cover."""
     g = L.Geo()
     grip(g)
-    xh = 0.016
-    L.prism_x(g, [(-0.15, 0.055), (0.045, 0.05), (0.055, 0.07), (0.055, 0.108), (-0.14, 0.108),
-                  (-0.15, 0.1)], -xh, xh)
-    barrel(g, -0.15, 0.085, [(0, 0.012), (0.04, 0.012)], ring_at=())
-    side_line(g, xh, [(-0.14, 0.095), (0.04, 0.095)], 0.004)
-    top_line(g, 0.108, 0, -0.13, 0.03, 0.004)
+    hull(g, [(0.05, 0.0145, 0.05, 0.08, 0.005), (-0.1, 0.0145, 0.05, 0.08, 0.005),
+             (-0.145, 0.0145, 0.062, 0.08, 0.005)], "polymer")
+    hull(g, [(0.058, 0.0145, 0.082, 0.106, 0.006), (0.05, 0.0165, 0.078, 0.11, 0.006),
+             (-0.14, 0.0165, 0.078, 0.11, 0.006), (-0.15, 0.0145, 0.08, 0.106, 0.006)], "armor")
+    for s in (-1, 1):
+        for i in range(5):
+            z = 0.008 + i * 0.008
+            sbox(g, (s * 0.0165, 0.086, z), (s * 0.0178, 0.104, z + 0.004), "metal")
+        P.accent(g, [(s * 0.0172, 0.097, -0.13), (s * 0.0172, 0.097, -0.02)], (s, 0, 0), 0.004,
+                 glow=0.0, h=0.0015)
+        P.lathe(g, (s * 0.0145, 0.066, -0.03), (s, 0, 0), [(0, 0.004), (0.002, 0.0035)], n=6,
+                mats="metal", cap0=None, cap1="metal")
+    P.panel_inset(g, side_rect(1, 0.0165, -0.075, -0.035, 0.088, 0.104), X, h=0.0015, rim=0.0025,
+                  mat="metal", mat_in="body")
+    barrel(g, -0.15, 0.085, [(0, 0.0105), (0.03, 0.0105), (0.03, 0.012), (0.04, 0.012)], n=10)
+    # Sights, top line, the lamp under the frame.
+    L.box(g, (-0.007, 0.11, 0.03), (0.007, 0.117, 0.045), mat="metal")
+    L.box(g, (-0.002, 0.11, -0.14), (0.002, 0.117, -0.13), mat="metal")
+    top_line(g, 0.11, 0, -0.12, 0.02, 0.004)
+    P.bevel_box(g, (-0.012, 0.036, -0.14), (0.012, 0.062, -0.085), 0.004, mat="body")
+    g.face([(-0.008, 0.041, -0.1402), (0.008, 0.041, -0.1402), (0.008, 0.057, -0.1402),
+            (-0.008, 0.057, -0.1402)], LIGHT, want=NZ)
     muzzle("pistol", (0, 0.085, -0.19))
     return g
 
 
 def medgun():
+    """Medical applicator: a rounded body, a white vial on clamps feeding the emitter dish
+    through a hose, coil rings round the neck."""
     g = L.Geo()
     grip(g)
     yc = 0.09
-    P.lathe(g, (0, yc, 0.15), NZ, [(0, 0.02), (0.03, 0.038), (0.3, 0.038), (0.34, 0.022),
-                                    (0.37, 0.022)], n=8)
-    L.box(g, (-0.022, 0.045, -0.1), (0.022, 0.06, 0.08))
+    n = 12
+    P.lathe(g, (0, yc, 0.15), NZ, [(0, 0.018), (0.02, 0.034), (0.05, 0.04), (0.26, 0.04),
+                                    (0.3, 0.03), (0.34, 0.022), (0.37, 0.022)], n=n,
+            mats=["polymer", "polymer", "armor", "armor", "metal", "metal"], cap0="polymer",
+            cap1="metal")
+    hull(g, [(0.08, 0.02, 0.046, 0.066), (-0.1, 0.02, 0.046, 0.066)], "polymer")
+    for t in (0.305, 0.32, 0.335):  # coils round the neck
+        P.lathe(g, (0, yc, 0.15), NZ, [(t, 0.027), (t + 0.007, 0.027)], n=n, mats="accent",
+                cap0="metal", cap1="metal")
     # Emitter dish: a cone opening forward, white core and ring.
     o = (0, yc, -0.22)
-    P.lathe(g, o, NZ, [(0, 0.024), (0.06, 0.07), (0.07, 0.072)], n=10, cap0=None, cap1=None)
-    fr, bk = (P.circle(L.add(o, (0, 0, -t)), NZ, r, 10) for t, r in ((0.07, 0.066), (0.03, 0.03)))
-    for i in range(10):  # the dish's inside faces forward and in
-        j = (i + 1) % 10
+    P.lathe(g, o, NZ, [(0, 0.024), (0.06, 0.07), (0.07, 0.072)], n=n, mats="armor", cap0=None,
+            cap1=None)
+    fr, bk = (P.circle(L.add(o, (0, 0, -t)), NZ, r, n) for t, r in ((0.07, 0.066), (0.03, 0.03)))
+    for i in range(n):  # the dish's inside faces forward and in
+        j = (i + 1) % n
         q = [bk[i], bk[j], fr[j], fr[i]]
         mid = L.mul(tuple(map(sum, zip(*q))), 0.25)
         g.face(q, LIGHT, want=L.add((-mid[0], yc - mid[1], 0), (0, 0, -0.05)))
     g.face(bk, LIGHT, want=NZ)
-    rim = P.circle(L.add(o, (0, 0, -0.07)), NZ, 0.072, 10)
-    rin = P.circle(L.add(o, (0, 0, -0.07)), NZ, 0.066, 10)
-    for i in range(10):
-        j = (i + 1) % 10
+    rim = P.circle(L.add(o, (0, 0, -0.07)), NZ, 0.072, n)
+    rin = P.circle(L.add(o, (0, 0, -0.07)), NZ, 0.066, n)
+    for i in range(n):
+        j = (i + 1) % n
         g.face([rin[i], rin[j], rim[j], rim[i]], "accent", want=NZ)
-    # White vial on top, team and white lines.
-    L.box(g, (-0.01, 0.125, -0.02), (0.01, 0.135, 0.1))
-    P.lathe(g, (0, 0.152, 0.11), NZ, [(0, 0.018), (0.14, 0.018)], n=8, mats=LIGHT, cap0="body",
+    for k in range(3):  # struts behind the dish
+        a = math.pi / 2 + 2 * math.pi * k / 3
+        c, s_ = math.cos(a), math.sin(a)
+        P.hose(g, [(c * 0.03, yc + s_ * 0.03, -0.19), (c * 0.066, yc + s_ * 0.066, -0.275)],
+               0.004, n=4, mat="metal")
+    # White vial on clamps, its hose down to the neck.
+    P.lathe(g, (0, 0.156, 0.11), NZ, [(0, 0.018), (0.14, 0.018)], n=n, mats=LIGHT, cap0="body",
             cap1="body")
-    for z in (0.11, -0.03):
-        P.lathe(g, (0, 0.152, z), NZ, [(0, 0.021), (0.012, 0.021)], n=8)
-    side = 0.038 * math.cos(math.pi / 8)
+    for z in (0.115, -0.03):
+        P.lathe(g, (0, 0.156, z), NZ, [(0, 0.0215), (0.016, 0.0215)], n=n, mats="metal",
+                cap0="metal", cap1="metal")
+        L.box(g, (-0.009, 0.126, z - 0.016), (0.009, 0.14, z), mat="metal")
+    P.hose(g, [(0, 0.156, -0.046), (0, 0.158, -0.08), (0, 0.14, -0.13), (0, 0.118, -0.17)],
+           0.006, n=6, collars=(1,))
+    side = 0.04 * math.cos(math.pi / n)
     for s in (-1, 1):
-        P.accent(g, [(s * side, yc, 0.1), (s * side, yc, -0.15)], (s, 0, 0), 0.006, glow=0.0,
+        P.accent(g, [(s * side, yc, 0.08), (s * side, yc, -0.1)], (s, 0, 0), 0.006, glow=0.0,
                  h=0.0015)
-        P.white(g, [(s * side, yc - 0.018, 0.05), (s * side, yc - 0.018, -0.1)], (s, 0, 0),
-                0.004, glow=0.004, h=0.0015)
+    P.plate(g, [(-0.012, 0.1285, 0.02), (0.012, 0.1285, 0.02), (0.012, 0.1285, -0.02),
+                (-0.012, 0.1285, -0.02)], Y, 0.003, "metal", bevel=0.003)
+    P.white(g, [(0, 0.1316, 0.012), (0, 0.1316, -0.012)], Y, 0.006, glow=0.004, h=0.0005)
     muzzle("medgun", (0, yc, -0.29))
     return g
 
 
 def repair_gun():
+    """Repair tool: a chunky armoured housing, a fluid canister on clamps piped to a tapering
+    nozzle with cooling fins, two arc prongs."""
     g = L.Geo()
     grip(g)
     yc = 0.09
     xh = 0.032
-    L.prism_x(g, [(-0.17, 0.05), (0.14, 0.05), (0.18, 0.075), (0.18, 0.13), (0.15, 0.14),
-                  (-0.17, 0.14)], -xh, xh)
-    # Canister on top: white fluid window between body end caps, on two clamps.
-    P.lathe(g, (0, 0.175, 0.16), NZ, [(0, 0.026), (0.02, 0.034), (0.05, 0.034), (0.15, 0.034),
-                                       (0.18, 0.034), (0.2, 0.026)], n=8,
-            mats=["body", "body", LIGHT, "body", "body"], cap0="body", cap1="body")
+    hull(g, [(0.18, 0.026, 0.078, 0.128, 0.01), (0.14, xh, 0.05, 0.14, 0.012),
+             (-0.14, xh, 0.05, 0.14, 0.012), (-0.17, 0.028, 0.054, 0.134, 0.012)], "armor")
+    # Canister on top: white fluid window between metal end caps, on two clamps.
+    P.lathe(g, (0, 0.177, 0.16), NZ, [(0, 0.026), (0.02, 0.034), (0.05, 0.034), (0.15, 0.034),
+                                       (0.18, 0.034), (0.2, 0.026)], n=12,
+            mats=["metal", "metal", LIGHT, "metal", "metal"], cap0="metal", cap1="metal")
     for z in (0.1, -0.01):
-        L.box(g, (-0.012, 0.135, z - 0.012), (0.012, 0.15, z + 0.012))
-        P.lathe(g, (0, 0.175, z + 0.012), NZ, [(0, 0.037), (0.024, 0.037)], n=8, mats="accent",
+        L.box(g, (-0.014, 0.138, z - 0.012), (0.014, 0.152, z + 0.012), mat="body")
+        P.lathe(g, (0, 0.177, z + 0.012), NZ, [(0, 0.037), (0.024, 0.037)], n=12, mats="accent",
                 cap0=None, cap1=None)
-    # Nozzle: tapering along -Z with cooling rings, white bore.
+    P.hose(g, [(0, 0.177, -0.04), (0, 0.176, -0.09), (0, 0.15, -0.15), (0, 0.128, -0.19)],
+           0.008, n=6, collars=(1,))
+    # Nozzle: tapering along -Z with cooling fins, a scorched tip, white bore.
     o = (0, yc, -0.17)
     P.lathe(g, o, NZ, [(0, 0.042), (0.06, 0.042), (0.1, 0.03), (0.14, 0.022), (0.16, 0.018)],
-            n=8, cap0="body", cap1=LIGHT)
-    for t in (0.012, 0.03, 0.048):
-        P.lathe(g, o, NZ, [(t, 0.046), (t + 0.008, 0.046)], n=8, mats="accent", cap0=None,
-                cap1=None)
+            n=12, mats=["metal", "metal", "metal", "heat"], cap0="metal", cap1=LIGHT)
+    for t in (0.01, 0.026, 0.042):
+        P.lathe(g, o, NZ, [(t, 0.047), (t + 0.008, 0.047)], n=12, mats="accent", cap0="metal",
+                cap1="metal")
     # Arc prongs either side of the bore, white tips.
     for s in (-1, 1):
-        P.tube(g, (s * 0.026, yc, -0.29), (s * 0.02, yc, -0.355), 0.006, n=4)
-        P.tube(g, (s * 0.02, yc, -0.355), (s * 0.018, yc, -0.37), 0.007, n=4, mat=LIGHT)
-        L.box(g, *sorted([(s * 0.018, yc - 0.012, -0.3), (s * 0.034, yc + 0.012, -0.27)],
-                         key=lambda p: p[0]))
-    side_line(g, xh, [(-0.16, 0.125), (0.14, 0.125)])
-    side_line(g, xh, [(-0.16, 0.065), (-0.06, 0.065)], 0.004)
-    top_line(g, 0.14, 0, -0.16, -0.05)
+        P.tube(g, (s * 0.026, yc, -0.29), (s * 0.02, yc, -0.355), 0.006, n=6, mat="metal")
+        P.tube(g, (s * 0.02, yc, -0.355), (s * 0.018, yc, -0.37), 0.007, n=6, mat=LIGHT)
+        sbox(g, (s * 0.018, yc - 0.012, -0.3), (s * 0.034, yc + 0.012, -0.27), "body")
+        P.panel_inset(g, side_rect(s, xh, -0.12, 0.02, 0.066, 0.112), (s, 0, 0), h=0.003,
+                      rim=0.006, mat="armor", mat_in="body")
+        P.accent(g, [(s * (xh + 0.0012), 0.126, -0.13), (s * (xh + 0.0012), 0.126, 0.13)],
+                 (s, 0, 0), 0.005, glow=0.0, h=0.0015)
+        P.vent(g, (s * xh, 0.09, 0.085), (s, 0, 0), 0.08, 0.04, slats=4, depth=0.005,
+               mat="metal", mat_in="rubber", frame=0.005)
+        P.bolt_row(g, (s * xh, 0.058, -0.12), (s * xh, 0.058, 0.12), (s, 0, 0), 5, r=0.004,
+                   h=0.002, ends=True)
+    top_line(g, 0.14, 0, -0.16, -0.14)
+    P.bevel_box(g, (-0.012, 0.14, -0.13), (0.012, 0.15, -0.07), 0.003, mat="metal")
     muzzle("repair_gun", (0, yc, -0.37))
+    return g
+
+
+def ember():
+    """The red faction's rifle: short and heavy. A slab receiver with paint slashes, a thick
+    ported heat shroud round a stub barrel, a drum under it, a stubby padded stock."""
+    g = L.Geo()
+    grip(g)
+    hull(g, [(0.11, 0.024, 0.052, 0.118, 0.01), (0.08, 0.03, 0.048, 0.126, 0.012),
+             (-0.14, 0.03, 0.048, 0.126, 0.012), (-0.165, 0.026, 0.052, 0.122, 0.012)], "armor")
+    hull(g, [(0.19, 0.022, 0.03, 0.114, 0.008), (0.11, 0.022, 0.05, 0.116, 0.008)], "polymer")
+    butt(g, 0.19, 0.024, 0.026, 0.118, t=0.018)
+    # Heat shroud: a fat octagonal jacket with ports, the stub barrel and its brake.
+    P.lathe(g, (0, 0.085, -0.165), NZ, [(0, 0.026), (0.01, 0.031), (0.185, 0.031), (0.2, 0.024)],
+            n=8, mats="heat", cap0="heat", cap1="heat")
+    rr = 0.031 * math.cos(math.pi / 8)
+    for k in range(8):
+        a = 2 * math.pi * k / 8
+        c, s_ = math.cos(a), math.sin(a)
+        if s_ < -0.5:
+            continue  # (not under the hand)
+        for i in range(4):
+            flat(g, (c * rr, 0.085 + s_ * rr, -0.2 - i * 0.037), (c, s_, 0), Z, 0.006, 0.012,
+                 0.001, "rubber")
+    barrel(g, -0.365, 0.085, [(0, 0.016), (0.012, 0.016), (0.012, 0.021), (0.035, 0.021)], n=8,
+           ring_at=((0.02, 0.0222),))
+    # Drum magazine across the receiver's front.
+    P.lathe(g, (-0.034, 0.0, -0.105), X, [(0, 0.04), (0.006, 0.047), (0.062, 0.047), (0.068, 0.04)],
+            n=12, mats="polymer", cap0="metal", cap1="metal")
+    for s in (-1, 1):
+        P.accent(g, P.circle((s * 0.0342, 0.0, -0.105), (s, 0, 0), 0.03, 12), (s, 0, 0), 0.005,
+                 closed=True, glow=0.0, h=0.001)
+        P.lathe(g, (s * 0.034, 0.0, -0.105), (s, 0, 0), [(0, 0.01), (0.005, 0.008)], n=6,
+                mats="metal", cap0=None, cap1="metal")
+        # Paint slashes, the team line, rivets.
+        for i in range(3):
+            z = -0.11 + i * 0.05
+            P.plate(g, [(s * 0.03, 0.066, z), (s * 0.03, 0.066, z + 0.022),
+                        (s * 0.03, 0.104, z + 0.046), (s * 0.03, 0.104, z + 0.024)], (s, 0, 0),
+                    0.0015, "paint")
+        P.accent(g, [(s * 0.0312, 0.114, -0.13), (s * 0.0312, 0.114, 0.07)], (s, 0, 0), 0.005,
+                 glow=0.0, h=0.0015)
+        P.bolt_row(g, (s * 0.03, 0.056, -0.13), (s * 0.03, 0.056, 0.07), (s, 0, 0), 5, r=0.0045,
+                   h=0.0025, ends=True)
+    L.box(g, (-0.012, 0.04, -0.135), (0.012, 0.05, -0.075), mat="metal")  # drum latch block
+    # Carry-handle sight: two posts and a bar.
+    for z in (-0.12, 0.04):
+        L.box(g, (-0.006, 0.126, z - 0.008), (0.006, 0.152, z + 0.008), mat="metal")
+    hull(g, [(0.06, 0.008, 0.15, 0.162, 0.004), (-0.14, 0.008, 0.15, 0.162, 0.004)], "armor")
+    top_line(g, 0.162, 0, -0.13, 0.05, 0.004)
+    muzzle("ember", (0, 0.085, -0.40))
+    return g
+
+
+def volt():
+    """The blue faction's rifle: long and slim. Twin rails either side of an open bore, coil
+    rings along them, a capacitor block, a skeletal stock, a tube sight."""
+    g = L.Geo()
+    grip(g)
+    hull(g, [(0.1, 0.014, 0.052, 0.112, 0.006), (0.08, 0.017, 0.05, 0.116, 0.006),
+             (-0.12, 0.017, 0.05, 0.116, 0.006), (-0.15, 0.013, 0.056, 0.112, 0.006)], "armor")
+    # Twin rails (upper and lower) with the lit bore between them, joined by coil rings.
+    for y0, y1 in ((0.097, 0.109), (0.061, 0.073)):
+        hull(g, [(-0.14, 0.0085, y0, y1, 0.003), (-0.455, 0.0085, y0, y1, 0.003),
+                 (-0.47, 0.006, y0 + 0.002, y1 - 0.002, 0.002)], "metal")
+    for y, n_ in ((0.0968, NY), (0.0732, Y)):
+        P.accent(g, [(0, y, -0.16), (0, y, -0.46)], n_, 0.007, glow=0.0, h=0.0006)
+    for i in range(5):
+        z = -0.2 - i * 0.055
+        for s in (-1, 1):
+            sbox(g, (s * 0.0085, 0.058, z - 0.014), (s * 0.0125, 0.112, z), "armor")
+            P.accent(g, [(s * 0.0127, 0.064, z - 0.007), (s * 0.0127, 0.106, z - 0.007)],
+                     (s, 0, 0), 0.004, glow=0.0, h=0.001)
+        L.box(g, (-0.0125, 0.109, z - 0.014), (0.0125, 0.114, z), mat="armor")
+        L.box(g, (-0.0125, 0.056, z - 0.014), (0.0125, 0.061, z), mat="armor")
+    # Handguard under the lower rail (where the off hand cups it), capacitor block ahead of
+    # the grip with lit cells.
+    hull(g, [(-0.15, 0.016, 0.046, 0.06, 0.005), (-0.31, 0.014, 0.05, 0.06, 0.004)], "polymer")
+    drop(g, [(0.05, 0.015, -0.14, -0.075), (-0.015, 0.015, -0.14, -0.08)], "body")
+    for s in (-1, 1):
+        for i in range(3):
+            z = -0.128 + i * 0.018
+            P.accent(g, [(s * 0.015, 0.04, z), (s * 0.015, -0.005, z)], (s, 0, 0), 0.008,
+                     glow=0.0, h=0.001)
+        P.accent(g, [(s * 0.0182, 0.1, -0.11), (s * 0.0182, 0.1, 0.07)], (s, 0, 0), 0.004,
+                 glow=0.0, h=0.0015)
+        P.plate(g, side_rect(s, 0.017, -0.11, 0.07, 0.058, 0.09), (s, 0, 0), 0.002, "polymer",
+                bevel=0.004)
+        P.bolt_row(g, (s * 0.019, 0.066, -0.1), (s * 0.019, 0.066, 0.06), (s, 0, 0), 3, r=0.003,
+                   h=0.0015, ends=True)
+    # Skeletal stock: two thin bars to a butt hook.
+    for y in (0.104, 0.058):
+        tz(g, 0, y, 0.3, 0.1, 0.006, n=6, mat="metal")
+    P.bevel_box(g, (-0.012, 0.03, 0.29), (0.012, 0.116, 0.304), 0.004, mat="polymer")
+    butt(g, 0.304, 0.013, 0.03, 0.116, t=0.01)
+    L.box(g, (-0.005, 0.058, 0.19), (0.005, 0.104, 0.2), mat="metal")
+    # Tube sight on two rings.
+    for z in (-0.08, 0.03):
+        L.box(g, (-0.004, 0.116, z - 0.006), (0.004, 0.128, z + 0.006), mat="metal")
+    P.lathe(g, (0, 0.139, 0.06), NZ, [(0, 0.012), (0.17, 0.012), (0.18, 0.014), (0.2, 0.014)],
+            n=12, mats="polymer", cap0="polymer", cap1="polymer")
+    lens(g, (0, 0.139, -0.1402), NZ, 0.0115)
+    lens(g, (0, 0.139, 0.0602), Z, 0.0095, ring=False)
+    muzzle("volt", (0, 0.085, -0.47))
+    return g
+
+
+def hive():
+    """The green faction's rifle: grown rather than built. A bulbous shell, three perforated
+    barrels in a cluster, a helical magazine under them, a tail stock with fins."""
+    g = L.Geo()
+    grip(g)
+    n = 12
+    P.lathe(g, (0, 0.085, 0.13), NZ, [(0, 0.012), (0.03, 0.03), (0.09, 0.042), (0.17, 0.045),
+                                       (0.25, 0.036), (0.31, 0.026), (0.33, 0.026)], n=n,
+            mats="armor", cap0="armor", cap1="metal", rv=0.88)
+    hull(g, [(0.06, 0.016, 0.046, 0.07), (-0.08, 0.016, 0.046, 0.07)], "polymer")
+    # Tail stock: a tapering spine with a hooked butt and two dorsal fins.
+    P.lathe(g, (0, 0.082, 0.28), NZ, [(0, 0.014), (0.03, 0.02), (0.15, 0.022)], n=n,
+            mats="polymer", cap0="polymer", cap1=None, rv=1.5)
+    P.bevel_box(g, (-0.013, 0.02, 0.272), (0.013, 0.112, 0.288), 0.005, mat="rubber")
+    for z0 in (0.02, 0.1):
+        P.extrude(g, [(-0.003, 0.12, z0), (-0.003, 0.12, z0 + 0.06), (-0.003, 0.15, z0 + 0.075),
+                      (-0.003, 0.134, z0 + 0.02)], (0.006, 0, 0), mat="paint")
+    # Barrel cluster: three thin barrels, bands holding them, lit tips.
+    for k in range(3):
+        a = math.pi / 2 + 2 * math.pi * k / 3
+        ca, sa = math.cos(a), math.sin(a)
+        bx, by = 0.012 * ca, 0.085 + 0.012 * sa
+        barrel(g, -0.2, by, [(0, 0.0075), (0.2, 0.007), (0.2, 0.0085), (0.22, 0.0085)], n=8,
+               x=bx)
+        for i in range(5):  # perforations: dark dots along each barrel's outer flat
+            flat(g, (bx + 0.0068 * ca, by + 0.0068 * sa, -0.275 - i * 0.022), (ca, sa, 0), Z,
+                 0.002, 0.006, 0.0008, "rubber")
+    for z in (-0.25, -0.375):
+        P.lathe(g, (0, 0.085, z), NZ, [(0, 0.023), (0.014, 0.023)], n=n, mats="metal",
+                cap0="metal", cap1="metal")
+    P.lathe(g, (0, 0.085, -0.375), NZ, [(0.004, 0.0238), (0.01, 0.0238)], n=n, mats="accent",
+            cap0=None, cap1=None)
+    # Helical magazine under the barrels: a drum along the bore with a spiral of lit cells.
+    my = 0.036
+    P.lathe(g, (0, my, -0.13), NZ, [(0, 0.016), (0.012, 0.024), (0.17, 0.024), (0.185, 0.014)],
+            n=n, mats="polymer", cap0="polymer", cap1="polymer")
+    rr = 0.024 * math.cos(math.pi / n)
+    for i in range(14):
+        a = math.pi / n + (i * 5 % 12) * 2 * math.pi / n
+        c, s_ = math.cos(a), math.sin(a)
+        flat(g, (c * rr, my + s_ * rr, -0.15 - i * 0.0105), (c, s_, 0), Z, 0.004, 0.004, 0.0012,
+             "accent")
+    L.box(g, (-0.006, 0.058, -0.24), (0.006, 0.066, -0.16), mat="metal")
+    # Team lines, shell studs, a compound-eye sight.
+    for s in (-1, 1):
+        P.accent(g, [(s * 0.0438, 0.085, 0.03), (s * 0.0438, 0.085, -0.03)], (s, 0, 0), 0.006,
+                 glow=0.0, h=0.0015)
+        for i in range(3):
+            z = 0.045 - i * 0.045
+            P.lathe(g, (s * 0.03, 0.105, z), L.norm((s, 0.9, 0)), [(0, 0.011), (0.012, 0.009),
+                                                                   (0.016, 0.004)], n=6,
+                    mats="paint", cap0=None, cap1="paint")
+    P.lathe(g, (0, 0.118, -0.02), Y, [(0, 0.012), (0.018, 0.012), (0.024, 0.008)], n=8,
+            mats="metal", cap0=None, cap1=None)
+    P.lathe(g, (0, 0.136, -0.02), Y, [(0, 0.011), (0.008, 0.008), (0.011, 0.003)], n=8,
+            mats="glass", cap0=None, cap1="glass")
+    muzzle("hive", (0, 0.085, -0.42))
     return g
 
 
@@ -580,7 +1006,8 @@ def max_shell():
 
 
 # Meshes shaded smoothly across edges bending less than this many degrees (the rest flat).
-SMOOTH = {}
+SMOOTH = {n: 35 for n in ("rifle", "scatter", "lance", "striker", "skyhook", "pistol", "medgun",
+                          "repair_gun", "ember", "volt", "hive")}
 
 
 def main():
@@ -589,6 +1016,7 @@ def main():
     for name, fn in (("rifle", rifle), ("scatter", scatter), ("lance", lance),
                      ("striker", striker), ("pistol", pistol), ("medgun", medgun),
                      ("repair_gun", repair_gun), ("skyhook", skyhook),
+                     ("ember", ember), ("volt", volt), ("hive", hive),
                      ("pounder", pounder), ("mauler", mauler), ("burster", burster),
                      ("max_shell", max_shell)):
         g = fn()
