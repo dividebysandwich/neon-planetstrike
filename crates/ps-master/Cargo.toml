@@ -1,0 +1,13 @@
+[package]
+name = "ps-master"
+version.workspace = true
+edition.workspace = true
+description = "Planetstrike master server: the list of game servers (REST API and web page)"
+
+[dependencies]
+ps-master-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tiny_http = "0.12.0"
+# The browser relay's WebSockets (plain; TLS comes from the proxy).
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }

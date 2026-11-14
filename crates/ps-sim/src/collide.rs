@@ -1,0 +1,871 @@
+//! Collision against a continent: the terrain (a heightfield), axis-aligned boxes, ramps
+//! (wedges climbing along one of the four grid directions) and upright prisms over convex
+//! polygons (scenery, round structures). Rays for projectiles and sight lines, a kinematic
+//! cylinder for players.
+//!
+//! The static colliders are found through a sparse grid over XZ; a handful of dynamic ones
+//! (vehicles' boxes near the query, set by the sim) are tested one by one.
+
+use glam::{Vec2, Vec3};
+use serde::{Deserialize, Serialize};
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use crate::terrain::Terrain;
+
+/// A collider in world space.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Collider {
+    Box {
+        min: Vec3,
+        max: Vec3,
+    },
+    /// A wedge over `min..max` whose top climbs from `min.y` to `max.y` in direction `dir`
+    /// (0: +Z, 1: +X, 2: -Z, 3: -X).
+    Ramp {
+        min: Vec3,
+        max: Vec3,
+        dir: u8,
+    },
+    /// An upright prism from `min.y` to `max.y` over the convex polygon `pts[..n]` (x, z; anti-
+    /// clockwise seen from above, i.e. positive signed area in (x, z)); `min`/`max` bound it.
+    Prism {
+        min: Vec3,
+        max: Vec3,
+        n: u8,
+        pts: [Vec2; PRISM_MAX],
+    },
+}
+
+/// The most corners a `Collider::Prism` has.
+pub const PRISM_MAX: usize = 8;
+
+impl Collider {
+    /// An upright prism over the convex polygon `poly` (x, z; either winding, at most
+    /// `PRISM_MAX` corners) from `y0` to `y1`.
+    pub fn prism(poly: &[Vec2], y0: f32, y1: f32) -> Collider {
+        assert!(
+            (3..=PRISM_MAX).contains(&poly.len()),
+            "{} corners",
+            poly.len()
+        );
+        let area: f32 = (0..poly.len())
+            .map(|i| poly[i].perp_dot(poly[(i + 1) % poly.len()]))
+            .sum();
+        let mut pts = [Vec2::ZERO; PRISM_MAX];
+        for (i, p) in poly.iter().enumerate() {
+            pts[i] = if area >= 0.0 {
+                *p
+            } else {
+                poly[poly.len() - 1 - i]
+            };
+        }
+        let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+        for p in poly {
+            lo = lo.min(*p);
+            hi = hi.max(*p);
+        }
+        Collider::Prism {
+            min: Vec3::new(lo.x, y0, lo.y),
+            max: Vec3::new(hi.x, y1, hi.y),
+            n: poly.len() as u8,
+            pts,
+        }
+    }
+
+    /// A prism's corners and the outward normals of its sides (side i runs from corner i to
+    /// corner i + 1).
+    fn prism_sides(n: u8, pts: &[Vec2; PRISM_MAX]) -> impl Iterator<Item = (Vec2, Vec2, Vec2)> {
+        let n = n as usize;
+        (0..n).map(move |i| {
+            let (a, b) = (pts[i], pts[(i + 1) % n]);
+            let e = (b - a).normalize_or_zero();
+            (a, b, Vec2::new(e.y, -e.x))
+        })
+    }
+
+    /// Whether (x, z) is over the collider's footprint.
+    fn over(&self, x: f32, z: f32) -> bool {
+        let (min, max) = self.bounds();
+        if x < min.x || x > max.x || z < min.z || z > max.z {
+            return false;
+        }
+        match self {
+            Collider::Prism { n, pts, .. } => {
+                let p = Vec2::new(x, z);
+                Self::prism_sides(*n, pts).all(|(a, _, nrm)| (p - a).dot(nrm) <= 1e-5)
+            }
+            _ => true,
+        }
+    }
+
+    /// How far to move a body's axis at `p` (x, z) so the circle of radius `r` around it is
+    /// clear of a prism's footprint (`None` if it is clear already).
+    pub fn prism_push(n: u8, pts: &[Vec2; PRISM_MAX], p: Vec2, r: f32) -> Option<Vec2> {
+        let mut deepest = (f32::MIN, Vec2::ZERO);
+        let mut nearest = (f32::MAX, Vec2::ZERO);
+        for (a, b, nrm) in Self::prism_sides(n, pts) {
+            let sd = (p - a).dot(nrm);
+            if sd > deepest.0 {
+                deepest = (sd, nrm);
+            }
+            let ab = b - a;
+            let t = ((p - a).dot(ab) / ab.length_squared().max(1e-12)).clamp(0.0, 1.0);
+            let q = a + ab * t;
+            let d = p.distance(q);
+            if d < nearest.0 {
+                nearest = (d, q);
+            }
+        }
+        if deepest.0 <= 0.0 {
+            // The axis is inside: out through the nearest side.
+            return Some(deepest.1 * (r - deepest.0));
+        }
+        let (d, q) = nearest;
+        if d >= r {
+            return None;
+        }
+        if d < 1e-6 {
+            return Some(deepest.1 * r);
+        }
+        Some((p - q) / d * (r - d))
+    }
+
+    pub fn bounds(&self) -> (Vec3, Vec3) {
+        match *self {
+            Collider::Box { min, max }
+            | Collider::Ramp { min, max, .. }
+            | Collider::Prism { min, max, .. } => (min, max),
+        }
+    }
+
+    /// 0..1 along the climbing direction of a ramp at (x, z).
+    fn ramp_t(min: Vec3, max: Vec3, dir: u8, x: f32, z: f32) -> f32 {
+        let t = match dir {
+            0 => (z - min.z) / (max.z - min.z),
+            1 => (x - min.x) / (max.x - min.x),
+            2 => (max.z - z) / (max.z - min.z),
+            _ => (max.x - x) / (max.x - min.x),
+        };
+        t.clamp(0.0, 1.0)
+    }
+
+    /// The top surface at (x, z), if (x, z) is over the collider.
+    pub fn top_at(&self, x: f32, z: f32) -> Option<f32> {
+        if !self.over(x, z) {
+            return None;
+        }
+        Some(self.top_clamped(x, z))
+    }
+
+    /// The top at the point of the footprint nearest (x, z).
+    pub fn top_clamped(&self, x: f32, z: f32) -> f32 {
+        match *self {
+            Collider::Box { max, .. } | Collider::Prism { max, .. } => max.y,
+            Collider::Ramp { min, max, dir } => {
+                min.y + (max.y - min.y) * Self::ramp_t(min, max, dir, x, z)
+            }
+        }
+    }
+
+    /// Ray `o + d t` for t in [0, t_max]: the entry distance and the surface normal.
+    pub fn ray(&self, o: Vec3, d: Vec3, t_max: f32) -> Option<(f32, Vec3)> {
+        match *self {
+            Collider::Box { min, max } => ray_box(o, d, min, max, t_max),
+            Collider::Ramp { min, max, dir } => {
+                // Clip against the wedge's planes (Cyrus-Beck): the box faces, then the slope.
+                let (lo, hi) = (min, max);
+                let rise = hi.y - lo.y;
+                // Slope plane: y - lo.y <= rise * t(x,z), written as n·p <= c.
+                let (n, c) = match dir {
+                    0 => {
+                        let s = rise / (hi.z - lo.z);
+                        (Vec3::new(0.0, 1.0, -s), lo.y - s * lo.z)
+                    }
+                    1 => {
+                        let s = rise / (hi.x - lo.x);
+                        (Vec3::new(-s, 1.0, 0.0), lo.y - s * lo.x)
+                    }
+                    2 => {
+                        let s = rise / (hi.z - lo.z);
+                        (Vec3::new(0.0, 1.0, s), lo.y + s * hi.z)
+                    }
+                    _ => {
+                        let s = rise / (hi.x - lo.x);
+                        (Vec3::new(s, 1.0, 0.0), lo.y + s * hi.x)
+                    }
+                };
+                let planes = [
+                    (Vec3::NEG_X, -lo.x),
+                    (Vec3::X, hi.x),
+                    (Vec3::NEG_Y, -lo.y),
+                    (Vec3::Y, hi.y),
+                    (Vec3::NEG_Z, -lo.z),
+                    (Vec3::Z, hi.z),
+                    (n, c),
+                ];
+                clip_planes(o, d, t_max, &planes)
+            }
+            Collider::Prism { min, max, n, pts } => {
+                let mut planes = [(Vec3::ZERO, 0.0); PRISM_MAX + 2];
+                planes[0] = (Vec3::NEG_Y, -min.y);
+                planes[1] = (Vec3::Y, max.y);
+                for (i, (a, _, nrm)) in Self::prism_sides(n, &pts).enumerate() {
+                    let n3 = Vec3::new(nrm.x, 0.0, nrm.y);
+                    planes[i + 2] = (n3, n3.dot(Vec3::new(a.x, 0.0, a.y)));
+                }
+                clip_planes(o, d, t_max, &planes[..n as usize + 2])
+            }
+        }
+    }
+}
+
+/// Ray against a convex volume given as half-spaces n·p <= c.
+fn clip_planes(o: Vec3, d: Vec3, t_max: f32, planes: &[(Vec3, f32)]) -> Option<(f32, Vec3)> {
+    let mut t0 = 0.0f32;
+    let mut t1 = t_max;
+    let mut normal = Vec3::ZERO;
+    for &(n, c) in planes {
+        let dn = n.dot(d);
+        let dist = c - n.dot(o);
+        if dn.abs() < 1e-9 {
+            if dist < 0.0 {
+                return None;
+            }
+            continue;
+        }
+        let t = dist / dn;
+        if dn < 0.0 {
+            // Entering.
+            if t > t0 {
+                t0 = t;
+                normal = n;
+            }
+        } else if t < t1 {
+            t1 = t;
+        }
+        if t0 > t1 {
+            return None;
+        }
+    }
+    if normal == Vec3::ZERO {
+        // Started inside.
+        return None;
+    }
+    Some((t0, normal.normalize()))
+}
+
+pub fn ray_box(o: Vec3, d: Vec3, min: Vec3, max: Vec3, t_max: f32) -> Option<(f32, Vec3)> {
+    let mut t0 = 0.0f32;
+    let mut t1 = t_max;
+    let mut normal = Vec3::ZERO;
+    for i in 0..3 {
+        if d[i].abs() < 1e-9 {
+            if o[i] < min[i] || o[i] > max[i] {
+                return None;
+            }
+            continue;
+        }
+        let inv = 1.0 / d[i];
+        let (mut a, mut b) = ((min[i] - o[i]) * inv, (max[i] - o[i]) * inv);
+        let mut n = Vec3::ZERO;
+        n[i] = -d[i].signum();
+        if a > b {
+            std::mem::swap(&mut a, &mut b);
+        }
+        if a > t0 {
+            t0 = a;
+            normal = n;
+        }
+        t1 = t1.min(b);
+        if t0 > t1 {
+            return None;
+        }
+    }
+    if normal == Vec3::ZERO {
+        return None;
+    }
+    Some((t0, normal))
+}
+
+/// Closest points between segments p1-q1 and p2-q2: returns the squared distance and the
+/// parameter along the first segment.
+pub fn segment_segment(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> (f32, f32) {
+    let d1 = q1 - p1;
+    let d2 = q2 - p2;
+    let r = p1 - p2;
+    let a = d1.dot(d1);
+    let e = d2.dot(d2);
+    let f = d2.dot(r);
+    let (s, t);
+    if a <= 1e-9 && e <= 1e-9 {
+        return (r.length_squared(), 0.0);
+    }
+    if a <= 1e-9 {
+        s = 0.0;
+        t = (f / e).clamp(0.0, 1.0);
+    } else {
+        let c = d1.dot(r);
+        if e <= 1e-9 {
+            t = 0.0;
+            s = (-c / a).clamp(0.0, 1.0);
+        } else {
+            let b = d1.dot(d2);
+            let denom = a * e - b * b;
+            let mut s0 = if denom > 1e-9 {
+                ((b * f - c * e) / denom).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let mut t0 = (b * s0 + f) / e;
+            if t0 < 0.0 {
+                t0 = 0.0;
+                s0 = (-c / a).clamp(0.0, 1.0);
+            } else if t0 > 1.0 {
+                t0 = 1.0;
+                s0 = ((b - c) / a).clamp(0.0, 1.0);
+            }
+            s = s0;
+            t = t0;
+        }
+    }
+    let c1 = p1 + d1 * s;
+    let c2 = p2 + d2 * t;
+    ((c1 - c2).length_squared(), s)
+}
+
+/// Player body for movement: a vertical cylinder.
+pub const BODY_RADIUS: f32 = 0.32;
+pub const BODY_HEIGHT: f32 = 1.75;
+/// The highest ledge a player walks onto without noticing.
+pub const STEP: f32 = 0.4;
+pub const GRAVITY: f32 = 9.81;
+
+/// Steepest land (rise over run) a body walks up.
+pub const MAX_WALK_SLOPE: f32 = 1.1;
+/// How deep a body wades into the sea (it stands this far below the surface at most).
+pub const WADE: f32 = 0.9;
+/// The grid's cell size (m).
+const CELL: f32 = 16.0;
+
+/// A continent's collision: the terrain, static colliders with a sparse grid over XZ to find
+/// nearby ones quickly, and dynamic ones (set by the sim) tested one by one.
+#[derive(Clone, Debug, Default)]
+pub struct World {
+    pub colliders: Vec<Collider>,
+    /// Colliders that move (vehicles), replaced by `set_dynamic`.
+    pub dynamic: Vec<Collider>,
+    /// Forcefields: they stop rays (projectiles, sight lines) but not bodies (the sim decides
+    /// who walks through), each with the team it lets through.
+    pub shields: Vec<(Collider, Option<crate::Team>)>,
+    pub terrain: Option<Arc<Terrain>>,
+    /// Areas (XZ min, max) where the land isn't solid (under a tower: its bunker).
+    pub holes: Vec<(Vec2, Vec2)>,
+    grid: HashMap<(i32, i32), Vec<u32>>,
+}
+
+fn cell_of(x: f32, z: f32) -> (i32, i32) {
+    ((x / CELL).floor() as i32, (z / CELL).floor() as i32)
+}
+
+impl World {
+    pub fn new(colliders: Vec<Collider>, terrain: Option<Arc<Terrain>>) -> World {
+        let mut w = World {
+            colliders,
+            dynamic: Vec::new(),
+            shields: Vec::new(),
+            terrain,
+            holes: Vec::new(),
+            grid: HashMap::new(),
+        };
+        for (i, c) in w.colliders.iter().enumerate() {
+            let (a, b) = c.bounds();
+            let (x0, z0) = cell_of(a.x, a.z);
+            let (x1, z1) = cell_of(b.x, b.z);
+            for z in z0..=z1 {
+                for x in x0..=x1 {
+                    w.grid.entry((x, z)).or_default().push(i as u32);
+                }
+            }
+        }
+        w
+    }
+
+    /// Replaces the dynamic colliders.
+    pub fn set_dynamic(&mut self, colliders: Vec<Collider>) {
+        self.dynamic = colliders;
+    }
+
+    /// The dynamic colliders whose XZ bounds overlap the rectangle.
+    fn near_dynamic(&self, min: Vec2, max: Vec2) -> impl Iterator<Item = &Collider> {
+        self.dynamic.iter().filter(move |c| {
+            let (a, b) = c.bounds();
+            a.x <= max.x && b.x >= min.x && a.z <= max.y && b.z >= min.y
+        })
+    }
+
+    /// Indices of colliders whose grid cells overlap the XZ rectangle.
+    fn near(&self, min: Vec2, max: Vec2, out: &mut Vec<u32>) {
+        out.clear();
+        let (x0, z0) = cell_of(min.x, min.y);
+        let (x1, z1) = cell_of(max.x, max.y);
+        for z in z0..=z1 {
+            for x in x0..=x1 {
+                if let Some(v) = self.grid.get(&(x, z)) {
+                    out.extend_from_slice(v);
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+    }
+
+    /// The static and dynamic colliders near the XZ rectangle.
+    pub fn near_colliders(&self, min: Vec2, max: Vec2) -> Vec<Collider> {
+        let mut idx = Vec::new();
+        self.near(min, max, &mut idx);
+        idx.iter()
+            .map(|&i| self.colliders[i as usize])
+            .chain(self.near_dynamic(min, max).copied())
+            .collect()
+    }
+
+    /// Indices of colliders in the cells the segment passes through (a grid walk).
+    fn along(&self, from: Vec3, to: Vec3, out: &mut Vec<u32>) {
+        out.clear();
+        let (a, b) = (
+            Vec2::new(from.x, from.z) / CELL,
+            Vec2::new(to.x, to.z) / CELL,
+        );
+        let (mut x, mut z) = (a.x.floor() as i32, a.y.floor() as i32);
+        let (ex, ez) = (b.x.floor() as i32, b.y.floor() as i32);
+        let d = b - a;
+        let (sx, sz) = (d.x.signum() as i32, d.y.signum() as i32);
+        let next = |p: f32, s: i32| if s > 0 { p.floor() + 1.0 } else { p.floor() };
+        let mut tx = if d.x != 0.0 {
+            (next(a.x, sx) - a.x) / d.x
+        } else {
+            f32::MAX
+        };
+        let mut tz = if d.y != 0.0 {
+            (next(a.y, sz) - a.y) / d.y
+        } else {
+            f32::MAX
+        };
+        let dtx = if d.x != 0.0 {
+            1.0 / d.x.abs()
+        } else {
+            f32::MAX
+        };
+        let dtz = if d.y != 0.0 {
+            1.0 / d.y.abs()
+        } else {
+            f32::MAX
+        };
+        for _ in 0..4096 {
+            if let Some(v) = self.grid.get(&(x, z)) {
+                out.extend_from_slice(v);
+            }
+            if x == ex && z == ez {
+                break;
+            }
+            if tx < tz {
+                x += sx;
+                tx += dtx;
+            } else {
+                z += sz;
+                tz += dtz;
+            }
+            if tx.min(tz) > 1.0 + dtx.min(dtz) {
+                // Past the end (rounding): take the last cell too.
+                if let Some(v) = self.grid.get(&(ex, ez)) {
+                    out.extend_from_slice(v);
+                }
+                break;
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+    }
+
+    /// The nearest hit of the segment `from`→`to` against the terrain, colliders and
+    /// forcefields not letting `team` through: distance fraction 0..1, point and normal.
+    pub fn ray_team(
+        &self,
+        from: Vec3,
+        to: Vec3,
+        team: Option<crate::Team>,
+    ) -> Option<(f32, Vec3, Vec3)> {
+        let d = to - from;
+        let len = d.length();
+        if len < 1e-6 {
+            return None;
+        }
+        let dir = d / len;
+        let mut idx = Vec::new();
+        let lo = from.min(to);
+        let hi = from.max(to);
+        self.along(from, to, &mut idx);
+        let mut best: Option<(f32, Vec3)> = None;
+        let near = idx.iter().map(|&i| &self.colliders[i as usize]);
+        let shields = self
+            .shields
+            .iter()
+            .filter(|(_, t)| team.is_none() || *t != team)
+            .map(|(c, _)| c);
+        for c in near
+            .chain(self.near_dynamic(Vec2::new(lo.x, lo.z), Vec2::new(hi.x, hi.z)))
+            .chain(shields)
+        {
+            let lim = best.map_or(len, |b| b.0);
+            if let Some((t, n)) = c.ray(from, dir, lim) {
+                best = Some((t, n));
+            }
+        }
+        if let Some(terrain) = &self.terrain {
+            let end = from + dir * best.map_or(len, |b| b.0);
+            if let Some((_, p)) = terrain.ray(from, end)
+                && !self.in_hole(p.x, p.z)
+            {
+                let t = (p - from).length();
+                return Some((t / len, p, terrain.normal(p.x, p.z)));
+            }
+        }
+        best.map(|(t, n)| (t / len, from + dir * t, n))
+    }
+
+    /// `ray_team` stopped by every forcefield.
+    pub fn ray(&self, from: Vec3, to: Vec3) -> Option<(f32, Vec3, Vec3)> {
+        self.ray_team(from, to, None)
+    }
+
+    /// Is the straight line between two points clear?
+    pub fn clear(&self, a: Vec3, b: Vec3) -> bool {
+        self.ray(a, b).is_none()
+    }
+
+    /// The land's (or the shallows') height at (x, z), or `None` without terrain.
+    pub fn land(&self, x: f32, z: f32) -> Option<f32> {
+        if self.in_hole(x, z) {
+            return None;
+        }
+        self.terrain
+            .as_ref()
+            .map(|t| t.height(x, z).max(t.water(x, z) - WADE))
+    }
+
+    pub fn in_hole(&self, x: f32, z: f32) -> bool {
+        self.holes
+            .iter()
+            .any(|(a, b)| x > a.x && x < b.x && z > a.y && z < b.y)
+    }
+
+    /// The highest surface under (x, z) no higher than `below`: colliders' tops and the land.
+    pub fn ground(&self, x: f32, z: f32, below: f32) -> Option<f32> {
+        let mut idx = Vec::new();
+        let p = Vec2::new(x, z);
+        self.near(p, p, &mut idx);
+        let mut best: Option<f32> = self.land(x, z);
+        for c in idx
+            .iter()
+            .map(|&i| &self.colliders[i as usize])
+            .chain(self.near_dynamic(p, p))
+        {
+            if let Some(top) = c.top_at(x, z)
+                && top <= below
+                && best.is_none_or(|b| top > b)
+            {
+                best = Some(top);
+            }
+        }
+        best
+    }
+
+    /// Moves a standing player (feet at `feet`) by `delta` in XZ, then applies gravity.
+    /// Returns the new feet position and vertical speed.
+    pub fn move_body(&self, feet: Vec3, delta: Vec2, vy: f32, dt: f32) -> (Vec3, f32) {
+        self.move_body_g(feet, delta, vy, dt, GRAVITY)
+    }
+
+    /// `move_body` with gravity `g` (m/s²).
+    pub fn move_body_g(&self, feet: Vec3, delta: Vec2, vy: f32, dt: f32, g: f32) -> (Vec3, f32) {
+        let mut p = feet;
+        // Substeps keep a fast move from tunnelling through thin walls.
+        let steps = ((delta.length() / (BODY_RADIUS * 0.5)).ceil() as usize).clamp(1, 8);
+        let mut idx = Vec::new();
+        for _ in 0..steps {
+            let before = p;
+            p.x += delta.x / steps as f32;
+            p.z += delta.y / steps as f32;
+            // Too steep a slope uphill stops the feet (sliding along it if possible).
+            if let Some(t) = &self.terrain
+                && vy == 0.0
+                && !self.in_hole(p.x, p.z)
+            {
+                let steep = |q: Vec3| {
+                    let h = t.height(q.x, q.z);
+                    h > t.height(before.x, before.z) + 1e-3
+                        && h > q.y - STEP
+                        && t.slope(q.x, q.z) > MAX_WALK_SLOPE
+                };
+                if steep(p) {
+                    let only_x = Vec3::new(p.x, p.y, before.z);
+                    let only_z = Vec3::new(before.x, p.y, p.z);
+                    p = if !steep(only_x) {
+                        only_x
+                    } else if !steep(only_z) {
+                        only_z
+                    } else {
+                        before
+                    };
+                }
+            }
+            let r = BODY_RADIUS + 0.05;
+            let (lo, hi) = (Vec2::new(p.x - r, p.z - r), Vec2::new(p.x + r, p.z + r));
+            self.near(lo, hi, &mut idx);
+            let dynamic: Vec<&Collider> = self.near_dynamic(lo, hi).collect();
+            for _ in 0..3 {
+                let mut moved = false;
+                for c in idx
+                    .iter()
+                    .map(|&i| &self.colliders[i as usize])
+                    .chain(dynamic.iter().copied())
+                {
+                    if push_out(c, &mut p) {
+                        moved = true;
+                    }
+                }
+                if !moved {
+                    break;
+                }
+            }
+        }
+        // Vertical: stand on the highest surface within a step, otherwise fall.
+        let ground = self.ground(p.x, p.z, p.y + STEP).unwrap_or(-50.0);
+        let mut vy = vy;
+        // Walking (not falling): follow the floor up and down within a step (and down
+        // gentle slopes).
+        let follow = STEP * 0.5 + delta.length() * MAX_WALK_SLOPE;
+        if vy == 0.0 && p.y - ground <= follow {
+            p.y = ground;
+            return (p, 0.0);
+        }
+        vy -= g * dt;
+        p.y += vy * dt;
+        if p.y <= ground {
+            p.y = ground;
+            vy = 0.0;
+        }
+        (p, vy)
+    }
+}
+
+/// Pushes a standing body (feet at `p`) out of a collider sideways; true if it moved.
+pub fn push_out(c: &Collider, p: &mut Vec3) -> bool {
+    let (min, max) = c.bounds();
+    if min.y >= p.y + BODY_HEIGHT {
+        return false;
+    }
+    if let Collider::Prism { n, pts, .. } = c {
+        if max.y <= p.y + STEP {
+            return false;
+        }
+        if let Some(push) = Collider::prism_push(*n, pts, Vec2::new(p.x, p.z), BODY_RADIUS) {
+            p.x += push.x;
+            p.z += push.y;
+            return true;
+        }
+        return false;
+    }
+    // Nearest point of the footprint to the body's axis.
+    let nx = p.x.clamp(min.x, max.x);
+    let nz = p.z.clamp(min.z, max.z);
+    let top = c.top_clamped(nx, nz);
+    if top <= p.y + STEP {
+        return false;
+    }
+    let dx = p.x - nx;
+    let dz = p.z - nz;
+    let d2 = dx * dx + dz * dz;
+    if d2 >= BODY_RADIUS * BODY_RADIUS {
+        return false;
+    }
+    if d2 > 1e-8 {
+        let d = d2.sqrt();
+        let push = BODY_RADIUS - d;
+        p.x += dx / d * push;
+        p.z += dz / d * push;
+    } else {
+        // Axis inside the footprint: out through the nearest side.
+        let opts = [
+            (p.x - min.x + BODY_RADIUS, Vec2::new(-1.0, 0.0)),
+            (max.x - p.x + BODY_RADIUS, Vec2::new(1.0, 0.0)),
+            (p.z - min.z + BODY_RADIUS, Vec2::new(0.0, -1.0)),
+            (max.z - p.z + BODY_RADIUS, Vec2::new(0.0, 1.0)),
+        ];
+        let (d, n) = opts
+            .iter()
+            .copied()
+            .fold(opts[0], |a, b| if b.0 < a.0 { b } else { a });
+        p.x += n.x * d;
+        p.z += n.y * d;
+    }
+    true
+}
+
+/// An upright prism with `sides` corners around (x, z) of radius `r` from `y0` to `y1`,
+/// turned by `turn` radians.
+pub fn round_prism(center: Vec3, r: f32, h: f32, sides: usize, turn: f32) -> Collider {
+    let sides = sides.clamp(3, PRISM_MAX);
+    let pts: Vec<Vec2> = (0..sides)
+        .map(|i| {
+            let a = turn + i as f32 / sides as f32 * std::f32::consts::TAU;
+            Vec2::new(center.x + a.cos() * r, center.z + a.sin() * r)
+        })
+        .collect();
+    Collider::prism(&pts, center.y, center.y + h)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ground_box() -> Collider {
+        Collider::Box {
+            min: Vec3::new(-20.0, -1.0, -20.0),
+            max: Vec3::new(20.0, 0.0, 20.0),
+        }
+    }
+
+    #[test]
+    fn ray_hits_box_face() {
+        let b = Collider::Box {
+            min: Vec3::new(-1.0, 0.0, -0.1),
+            max: Vec3::new(1.0, 3.0, 0.1),
+        };
+        let (t, n) = b.ray(Vec3::new(0.0, 1.0, 5.0), Vec3::NEG_Z, 10.0).unwrap();
+        assert!((t - 4.9).abs() < 1e-4);
+        assert_eq!(n, Vec3::Z);
+        assert!(b.ray(Vec3::new(0.0, 4.0, 5.0), Vec3::NEG_Z, 10.0).is_none());
+    }
+
+    #[test]
+    fn ray_hits_ramp_slope() {
+        // Climbs along +Z from y=0 at z=-3 to y=3 at z=3.
+        let r = Collider::Ramp {
+            min: Vec3::new(-1.0, 0.0, -3.0),
+            max: Vec3::new(1.0, 3.0, 3.0),
+            dir: 0,
+        };
+        // Straight down at z=0: the slope is at y=1.5.
+        let (t, n) = r.ray(Vec3::new(0.0, 5.0, 0.0), Vec3::NEG_Y, 10.0).unwrap();
+        assert!((t - 3.5).abs() < 1e-4, "{t}");
+        assert!(n.y > 0.8 && n.z < 0.0);
+        // Above the slope near the low end, a horizontal ray at y=2 passes z=-2 freely.
+        assert!(
+            r.ray(Vec3::new(5.0, 2.0, -2.0), Vec3::NEG_X, 10.0)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn body_blocked_by_wall_and_climbs_ramp() {
+        let wall = Collider::Box {
+            min: Vec3::new(-1.0, 0.0, -0.1),
+            max: Vec3::new(1.0, 3.0, 0.1),
+        };
+        let w = World::new(vec![ground_box(), wall], None);
+        let mut p = Vec3::new(0.0, 0.0, 2.0);
+        let mut vy = 0.0;
+        for _ in 0..120 {
+            (p, vy) = w.move_body(p, Vec2::new(0.0, -0.1), vy, 1.0 / 60.0);
+        }
+        assert!(p.z >= 0.1 + BODY_RADIUS - 1e-3, "{p}");
+
+        let ramp = Collider::Ramp {
+            min: Vec3::new(-1.0, 0.0, -3.0),
+            max: Vec3::new(1.0, 3.0, 3.0),
+            dir: 0,
+        };
+        let deck = Collider::Box {
+            min: Vec3::new(-3.0, 2.8, 3.0),
+            max: Vec3::new(3.0, 3.0, 7.0),
+        };
+        let w = World::new(vec![ground_box(), ramp, deck], None);
+        let mut p = Vec3::new(0.0, 0.0, -5.0);
+        let mut vy = 0.0;
+        for _ in 0..150 {
+            (p, vy) = w.move_body(p, Vec2::new(0.0, 0.07), vy, 1.0 / 60.0);
+        }
+        assert!((p.y - 3.0).abs() < 1e-3 && p.z > 4.0, "{p}");
+        // Beside the ramp's high end, the ramp is a wall.
+        let mut p = Vec3::new(3.0, 0.0, 2.0);
+        for _ in 0..100 {
+            (p, vy) = w.move_body(p, Vec2::new(-0.07, 0.0), vy, 1.0 / 60.0);
+        }
+        assert!(p.x >= 1.0 + BODY_RADIUS - 1e-3 && p.y < 0.01, "{p}");
+    }
+
+    #[test]
+    fn prisms_block_bodies_carry_them_and_stop_rays() {
+        // An octagonal column, 1 m across its flats, 3 m tall.
+        let oct: Vec<Vec2> = (0..8)
+            .map(|i| {
+                let a = (22.5 + 45.0 * i as f32).to_radians();
+                Vec2::new(a.cos(), a.sin()) * (0.5 / 22.5f32.to_radians().cos())
+            })
+            .collect();
+        let col = Collider::prism(&oct, 0.0, 3.0);
+        // Either winding gives the same collider.
+        let rev: Vec<Vec2> = oct.iter().rev().copied().collect();
+        assert_eq!(Collider::prism(&rev, 0.0, 3.0), col);
+        let w = World::new(vec![ground_box(), col], None);
+        // Walking into it diagonally: stopped a body's radius off its slanted face.
+        let mut p = Vec3::new(2.0, 0.0, 2.0);
+        let mut vy = 0.0;
+        for _ in 0..120 {
+            (p, vy) = w.move_body(p, Vec2::new(-0.05, -0.05), vy, 1.0 / 60.0);
+        }
+        let r = Vec2::new(p.x, p.z).length();
+        assert!((r - (0.5 + BODY_RADIUS)).abs() < 0.03, "{p} at {r}");
+        // A ray at it hits the slanted face, its normal out of that face.
+        let (t, n) = col
+            .ray(
+                Vec3::new(3.0, 1.0, 3.0),
+                Vec3::new(-1.0, 0.0, -1.0).normalize(),
+                10.0,
+            )
+            .unwrap();
+        assert!((t - (3.0 * 2f32.sqrt() - 0.5)).abs() < 1e-3, "{t}");
+        assert!(
+            (n - Vec3::new(1.0, 0.0, 1.0).normalize()).length() < 1e-4,
+            "{n}"
+        );
+        // A low step of it is stood on: walking onto it climbs it.
+        let step = Collider::prism(&oct, 0.0, 0.25);
+        let w = World::new(vec![ground_box(), step], None);
+        let mut p = Vec3::new(-2.0, 0.0, 0.0);
+        for _ in 0..40 {
+            (p, vy) = w.move_body(p, Vec2::new(0.05, 0.0), vy, 1.0 / 60.0);
+        }
+        assert!((p.y - 0.25).abs() < 1e-3 && p.x.abs() < 0.1, "{p}");
+        assert_eq!(w.ground(0.45, 0.0, 1.0), Some(0.25));
+        // Off its corner (inside the bounding box) is the floor.
+        assert_eq!(w.ground(0.5, 0.5, 1.0), Some(0.0));
+    }
+
+    #[test]
+    fn body_falls_through_hole() {
+        let deck = Collider::Box {
+            min: Vec3::new(-3.0, 2.8, -3.0),
+            max: Vec3::new(3.0, 3.0, 3.0),
+        };
+        let w = World::new(vec![ground_box(), deck], None);
+        let mut p = Vec3::new(0.0, 3.0, 0.0);
+        let mut vy = 0.0;
+        for _ in 0..120 {
+            (p, vy) = w.move_body(p, Vec2::new(0.1, 0.0), vy, 1.0 / 60.0);
+        }
+        assert!(p.y.abs() < 1e-3, "{p}");
+    }
+}

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Neon Planetstrike
+GenericName=Planetstrike
+Comment=Red vs Blue planetstrike in procedurally generated neon arenas, in VR or on the flat screen
+Exec=neon-planetstrike
+Icon=planetstrike
+Terminal=false
+Categories=Game;ActionGame;
+Keywords=planetstrike;VR;OpenXR;shooter;
+StartupWMClass=planetstrike

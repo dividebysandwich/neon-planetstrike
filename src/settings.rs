@@ -1,0 +1,1054 @@
+//! The player's settings: the player's name; the flat screen's key bindings, mouse sensitivity, inverted mouse
+//! look, field of view, crouching (held or toggled), head bob and reflections, and the sound effects' volume (in VR too);
+//! VR: the controller buttons of the actions that aren't gestures (`VrAction`).
+//! Changed in the options screen (src/options.rs) and kept in `settings.ron` in the user's
+//! config directory (`$XDG_CONFIG_HOME/planetstrike`, `~/.config/planetstrike`, `%APPDATA%\planetstrike`).
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
+
+use bevy::prelude::*;
+use serde::{Deserialize, Serialize};
+
+/// Something the player does with a key or a mouse button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Action {
+    Forward,
+    Back,
+    Left,
+    Right,
+    Sprint,
+    Crouch,
+    Jump,
+    Fire,
+    /// Aim / zoom; in vehicles: hover down (Ctrl stays crouch).
+    Aim,
+    Reload,
+    Grenade,
+    /// Enter or leave a vehicle, use a terminal or console.
+    Use,
+    Primary,
+    Secondary,
+    Special,
+    Map,
+    /// Deploy the spawn bus.
+    Deploy,
+    /// Move to the next free seat.
+    Seat,
+    /// Third person view in vehicles.
+    View,
+    Scores,
+    Chat,
+    /// The squad panel.
+    Squad,
+    /// The squad leader: the waypoint where one aims.
+    Waypoint,
+    /// An engineer: the construction panel.
+    Build,
+    /// Spot the enemy one aims at for one's faction.
+    Spot,
+}
+
+impl Action {
+    pub const ALL: [Action; 25] = [
+        Action::Forward,
+        Action::Back,
+        Action::Left,
+        Action::Right,
+        Action::Sprint,
+        Action::Crouch,
+        Action::Jump,
+        Action::Fire,
+        Action::Aim,
+        Action::Reload,
+        Action::Grenade,
+        Action::Use,
+        Action::Primary,
+        Action::Secondary,
+        Action::Special,
+        Action::Map,
+        Action::Deploy,
+        Action::Seat,
+        Action::View,
+        Action::Scores,
+        Action::Chat,
+        Action::Squad,
+        Action::Waypoint,
+        Action::Build,
+        Action::Spot,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Action::Forward => "Move forward / accelerate",
+            Action::Back => "Move back / slow down",
+            Action::Left => "Strafe left / roll left",
+            Action::Right => "Strafe right / roll right",
+            Action::Sprint => "Sprint",
+            Action::Crouch => "Crouch / descend",
+            Action::Jump => "Jump / hover up",
+            Action::Fire => "Fire",
+            Action::Aim => "Aim / zoom",
+            Action::Reload => "Reload",
+            Action::Grenade => "Throw grenade",
+            Action::Use => "Use / enter / leave vehicle",
+            Action::Primary => "Rifle",
+            Action::Secondary => "Sidearm",
+            Action::Special => "Special weapon",
+            Action::Map => "Map",
+            Action::Deploy => "Deploy spawn bus",
+            Action::Seat => "Switch seat",
+            Action::View => "Vehicle camera",
+            Action::Scores => "Scores (hold)",
+            Action::Chat => "Chat (/s: to the squad)",
+            Action::Squad => "Squad",
+            Action::Waypoint => "Squad waypoint (leader)",
+            Action::Build => "Build (engineer)",
+            Action::Spot => "Spot the enemy aimed at",
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Action::Forward => "forward",
+            Action::Back => "back",
+            Action::Left => "left",
+            Action::Right => "right",
+            Action::Sprint => "sprint",
+            Action::Crouch => "crouch",
+            Action::Jump => "jump",
+            Action::Fire => "fire",
+            Action::Aim => "aim",
+            Action::Reload => "reload",
+            Action::Grenade => "grenade",
+            Action::Use => "use",
+            Action::Primary => "primary",
+            Action::Secondary => "secondary",
+            Action::Special => "special",
+            Action::Map => "map",
+            Action::Deploy => "deploy",
+            Action::Seat => "seat",
+            Action::View => "view",
+            Action::Scores => "scores",
+            Action::Chat => "chat",
+            Action::Squad => "squad",
+            Action::Waypoint => "waypoint",
+            Action::Build => "build",
+            Action::Spot => "spot",
+        }
+    }
+
+    fn defaults(self) -> [Option<Binding>; 2] {
+        use Binding::{Key, Mouse};
+        match self {
+            Action::Forward => [Some(Key(KeyCode::KeyW)), Some(Key(KeyCode::ArrowUp))],
+            Action::Back => [Some(Key(KeyCode::KeyS)), Some(Key(KeyCode::ArrowDown))],
+            Action::Left => [Some(Key(KeyCode::KeyA)), Some(Key(KeyCode::ArrowLeft))],
+            Action::Right => [Some(Key(KeyCode::KeyD)), Some(Key(KeyCode::ArrowRight))],
+            Action::Sprint => [Some(Key(KeyCode::ShiftLeft)), None],
+            Action::Crouch => [Some(Key(KeyCode::ControlLeft)), Some(Key(KeyCode::KeyC))],
+            Action::Jump => [Some(Key(KeyCode::Space)), None],
+            Action::Fire => [Some(Mouse(MouseButton::Left)), None],
+            Action::Aim => [Some(Mouse(MouseButton::Right)), Some(Key(KeyCode::KeyZ))],
+            Action::Reload => [Some(Key(KeyCode::KeyR)), None],
+            Action::Grenade => [Some(Key(KeyCode::KeyG)), None],
+            Action::Use => [Some(Key(KeyCode::KeyE)), None],
+            Action::Primary => [Some(Key(KeyCode::Digit1)), None],
+            Action::Secondary => [Some(Key(KeyCode::Digit2)), None],
+            Action::Special => [Some(Key(KeyCode::Digit3)), None],
+            Action::Map => [Some(Key(KeyCode::KeyM)), None],
+            Action::Deploy => [Some(Key(KeyCode::KeyB)), None],
+            Action::Seat => [Some(Key(KeyCode::KeyF)), None],
+            Action::View => [Some(Key(KeyCode::KeyV)), None],
+            Action::Scores => [Some(Key(KeyCode::Tab)), None],
+            Action::Chat => [Some(Key(KeyCode::Enter)), None],
+            Action::Squad => [Some(Key(KeyCode::KeyP)), None],
+            Action::Waypoint => [Some(Key(KeyCode::KeyT)), None],
+            Action::Build => [Some(Key(KeyCode::KeyN)), None],
+            Action::Spot => [Some(Key(KeyCode::KeyQ)), None],
+        }
+    }
+}
+
+/// A VR action on a controller button (the VR controls panel, src/vrui.rs). Firing (the
+/// drawn gun's trigger), drawing (gripping at a holster), moving and turning (the sticks)
+/// stay as they are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VrAction {
+    Jump,
+    Dash,
+    /// Crouching on (and off again), besides crouching for real.
+    Crouch,
+    /// Held to take a grenade into that hand, let go to throw.
+    Grenade,
+    Shield,
+    Gadget,
+    /// Held a second (without a grenade in that hand): the menu, for controllers without a
+    /// right menu button.
+    Menu,
+}
+
+impl VrAction {
+    pub const ALL: [VrAction; 7] = [
+        VrAction::Jump,
+        VrAction::Dash,
+        VrAction::Crouch,
+        VrAction::Grenade,
+        VrAction::Shield,
+        VrAction::Gadget,
+        VrAction::Menu,
+    ];
+
+    /// As the panel names it (capitals: VR's font).
+    pub fn name(self) -> &'static str {
+        match self {
+            VrAction::Jump => "JUMP",
+            VrAction::Dash => "DASH",
+            VrAction::Crouch => "CROUCH (ON / OFF)",
+            VrAction::Grenade => "GRENADE (HOLD)",
+            VrAction::Shield => "SHIELD",
+            VrAction::Gadget => "GADGET",
+            VrAction::Menu => "MENU (HOLD)",
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            VrAction::Jump => "jump",
+            VrAction::Dash => "dash",
+            VrAction::Crouch => "crouch",
+            VrAction::Grenade => "grenade",
+            VrAction::Shield => "shield",
+            VrAction::Gadget => "gadget",
+            VrAction::Menu => "menu",
+        }
+    }
+
+    pub fn default_button(self) -> VrButton {
+        match self {
+            VrAction::Jump => VrButton::Primary,
+            VrAction::Dash => VrButton::StickUp,
+            VrAction::Crouch => VrButton::StickDown,
+            VrAction::Grenade => VrButton::Secondary,
+            VrAction::Shield => VrButton::FreeTrigger,
+            VrAction::Gadget => VrButton::FreeGrip,
+            VrAction::Menu => VrButton::Secondary,
+        }
+    }
+
+    /// The buttons it can be put on, in the order the panel steps through them (the menu
+    /// always on one: some controllers have no other way to it; it is held, so not on the
+    /// free hand's trigger or grip, which other things use).
+    pub fn choices(self) -> &'static [VrButton] {
+        use VrButton::*;
+        match self {
+            VrAction::Menu => &[Primary, Secondary, LeftStick, RightStick],
+            _ => &[
+                Primary,
+                Secondary,
+                LeftStick,
+                RightStick,
+                StickUp,
+                StickDown,
+                FreeTrigger,
+                FreeGrip,
+                Unbound,
+            ],
+        }
+    }
+
+    /// Another action whose sharing a button with this one is meant (the menu is held on the
+    /// grenade's button: with grenades, holding it takes one instead).
+    fn shares_with(self, other: VrAction) -> bool {
+        matches!(
+            (self, other),
+            (VrAction::Menu, VrAction::Grenade) | (VrAction::Grenade, VrAction::Menu)
+        )
+    }
+}
+
+/// A controller input a `VrAction` can be on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VrButton {
+    /// A or X (either controller).
+    Primary,
+    /// B or Y.
+    Secondary,
+    /// Clicking the left stick (the left controller's trackpad), or the right one.
+    LeftStick,
+    RightStick,
+    /// The right stick pushed forward, or pulled down.
+    StickUp,
+    StickDown,
+    /// The trigger and grip of the hand without a gun (gripping near a holster draws from it
+    /// instead).
+    FreeTrigger,
+    FreeGrip,
+    Unbound,
+}
+
+impl VrButton {
+    const ALL: [VrButton; 9] = [
+        VrButton::Primary,
+        VrButton::Secondary,
+        VrButton::LeftStick,
+        VrButton::RightStick,
+        VrButton::StickUp,
+        VrButton::StickDown,
+        VrButton::FreeTrigger,
+        VrButton::FreeGrip,
+        VrButton::Unbound,
+    ];
+
+    /// As the panel and the hints name it (capitals: VR's font).
+    pub fn name(self) -> &'static str {
+        match self {
+            VrButton::Primary => "A OR X",
+            VrButton::Secondary => "B OR Y",
+            VrButton::LeftStick => "LEFT STICK CLICK",
+            VrButton::RightStick => "RIGHT STICK CLICK",
+            VrButton::StickUp => "RIGHT STICK FORWARD",
+            VrButton::StickDown => "RIGHT STICK DOWN",
+            VrButton::FreeTrigger => "FREE HAND TRIGGER",
+            VrButton::FreeGrip => "FREE HAND GRIP",
+            VrButton::Unbound => "NOT BOUND",
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            VrButton::Primary => "primary",
+            VrButton::Secondary => "secondary",
+            VrButton::LeftStick => "left_stick",
+            VrButton::RightStick => "right_stick",
+            VrButton::StickUp => "stick_up",
+            VrButton::StickDown => "stick_down",
+            VrButton::FreeTrigger => "free_trigger",
+            VrButton::FreeGrip => "free_grip",
+            VrButton::Unbound => "none",
+        }
+    }
+
+    /// On the free hand: with dual pistols both hands hold one.
+    pub fn free_hand(self) -> bool {
+        matches!(self, VrButton::FreeTrigger | VrButton::FreeGrip)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Binding {
+    Key(KeyCode),
+    Mouse(MouseButton),
+    /// The mouse wheel: rolled up, it holds the action until rolled down again.
+    Wheel,
+}
+
+/// The name the mouse wheel is shown and saved by.
+const WHEEL: &str = "Mouse Wheel";
+
+/// Keys that can be bound, with the names shown and saved.
+const KEYS: &[(KeyCode, &str)] = {
+    use KeyCode::*;
+    &[
+        (KeyA, "A"),
+        (KeyB, "B"),
+        (KeyC, "C"),
+        (KeyD, "D"),
+        (KeyE, "E"),
+        (KeyF, "F"),
+        (KeyG, "G"),
+        (KeyH, "H"),
+        (KeyI, "I"),
+        (KeyJ, "J"),
+        (KeyK, "K"),
+        (KeyL, "L"),
+        (KeyM, "M"),
+        (KeyN, "N"),
+        (KeyO, "O"),
+        (KeyP, "P"),
+        (KeyQ, "Q"),
+        (KeyR, "R"),
+        (KeyS, "S"),
+        (KeyT, "T"),
+        (KeyU, "U"),
+        (KeyV, "V"),
+        (KeyW, "W"),
+        (KeyX, "X"),
+        (KeyY, "Y"),
+        (KeyZ, "Z"),
+        (Digit0, "0"),
+        (Digit1, "1"),
+        (Digit2, "2"),
+        (Digit3, "3"),
+        (Digit4, "4"),
+        (Digit5, "5"),
+        (Digit6, "6"),
+        (Digit7, "7"),
+        (Digit8, "8"),
+        (Digit9, "9"),
+        (ArrowUp, "Up"),
+        (ArrowDown, "Down"),
+        (ArrowLeft, "Left"),
+        (ArrowRight, "Right"),
+        (ShiftLeft, "Left Shift"),
+        (ShiftRight, "Right Shift"),
+        (ControlLeft, "Left Ctrl"),
+        (ControlRight, "Right Ctrl"),
+        (AltLeft, "Left Alt"),
+        (AltRight, "Right Alt"),
+        (Space, "Space"),
+        (Tab, "Tab"),
+        (Enter, "Enter"),
+        (CapsLock, "Caps Lock"),
+        (Backquote, "`"),
+        (Minus, "-"),
+        (Equal, "="),
+        (BracketLeft, "["),
+        (BracketRight, "]"),
+        (Backslash, "\\"),
+        (Semicolon, ";"),
+        (Quote, "'"),
+        (Comma, ","),
+        (Period, "."),
+        (Slash, "/"),
+        (Insert, "Insert"),
+        (Home, "Home"),
+        (End, "End"),
+        (PageUp, "Page Up"),
+        (PageDown, "Page Down"),
+        (Numpad0, "Num 0"),
+        (Numpad1, "Num 1"),
+        (Numpad2, "Num 2"),
+        (Numpad3, "Num 3"),
+        (Numpad4, "Num 4"),
+        (Numpad5, "Num 5"),
+        (Numpad6, "Num 6"),
+        (Numpad7, "Num 7"),
+        (Numpad8, "Num 8"),
+        (Numpad9, "Num 9"),
+        (F1, "F1"),
+        (F2, "F2"),
+        (F3, "F3"),
+        (F4, "F4"),
+        (F5, "F5"),
+        (F6, "F6"),
+        (F7, "F7"),
+        (F8, "F8"),
+        (F9, "F9"),
+        (F10, "F10"),
+        (F11, "F11"),
+        (F12, "F12"),
+    ]
+};
+
+const BUTTONS: &[(MouseButton, &str)] = &[
+    (MouseButton::Left, "Left Mouse"),
+    (MouseButton::Right, "Right Mouse"),
+    (MouseButton::Middle, "Middle Mouse"),
+    (MouseButton::Back, "Mouse 4"),
+    (MouseButton::Forward, "Mouse 5"),
+];
+
+impl Binding {
+    pub fn name(self) -> String {
+        match self {
+            Binding::Key(k) => KEYS
+                .iter()
+                .find(|(c, _)| *c == k)
+                .map_or_else(|| format!("{k:?}"), |(_, n)| n.to_string()),
+            Binding::Mouse(b) => BUTTONS
+                .iter()
+                .find(|(c, _)| *c == b)
+                .map_or_else(|| format!("{b:?}"), |(_, n)| n.to_string()),
+            Binding::Wheel => WHEEL.to_string(),
+        }
+    }
+
+    fn parse(s: &str) -> Option<Binding> {
+        KEYS.iter()
+            .find(|(_, n)| *n == s)
+            .map(|(k, _)| Binding::Key(*k))
+            .or_else(|| {
+                BUTTONS
+                    .iter()
+                    .find(|(_, n)| *n == s)
+                    .map(|(b, _)| Binding::Mouse(*b))
+            })
+            .or_else(|| (s == WHEEL).then_some(Binding::Wheel))
+    }
+
+    /// Whether this key can be bound (Esc and the like are the game's own).
+    pub fn bindable_key(k: KeyCode) -> bool {
+        KEYS.iter().any(|(c, _)| *c == k)
+    }
+}
+
+#[derive(Resource, Clone, Debug, PartialEq)]
+pub struct Settings {
+    /// The player's name (empty: the default, `Args::default_name`), as changed in the
+    /// options; `--name` or the page's `?name=` overrides it.
+    pub name: String,
+    /// Mouse look speed, 1 = the default.
+    pub sensitivity: f32,
+    pub invert_y: bool,
+    /// Vehicle aiming and the VTOL's pitch the other way up.
+    pub invert_vehicle_y: bool,
+    pub invert_flight_y: bool,
+    /// The flat screen's field of view (degrees, vertical: `FOV_RANGE`).
+    pub fov: f32,
+    /// The crouch key toggles crouching (instead of crouching while held).
+    pub toggle_crouch: bool,
+    /// The view bobs while walking, the gun sways and kicks, and hits, blasts and landings
+    /// jolt the view (flat screen, src/viewkick.rs).
+    pub head_bob: bool,
+    /// The HUD marks the targets to go for (`hud::goals`), flat screen and VR.
+    pub objective_markers: bool,
+    /// Glossy floors, walls and models with screen-space reflections (flat screen,
+    /// src/reflections.rs); off for weaker GPUs.
+    pub reflections: bool,
+    /// VR: the gun side on the left (`--left-handed` too: the rifle over the left shoulder, the
+    /// sidearm on the left hip, src/holster.rs); the gun turned nose down in the hand (degrees,
+    /// `GUN_TILT_RANGE`); the hip holsters raised (m, `HOLSTER_RANGE`); the
+    /// vibration's strength (0..=1); the stick moving where the left hand points (else where
+    /// the head looks); and how much higher the eyes are than tracked (m: "calibrate height",
+    /// for playing seated or a floor tracked wrong).
+    pub left_handed: bool,
+    pub gun_tilt: f32,
+    pub holster_dy: f32,
+    pub haptics: f32,
+    pub steer_hand: bool,
+    pub eye_offset: f32,
+    /// VR comfort: the right stick turning in steps of this many degrees (0: smoothly, else
+    /// one of `SNAP_TURNS`), and the view's edges darkening while the stick moves, dashing or
+    /// flying.
+    pub snap_turn: f32,
+    pub vignette: bool,
+    /// The sound effects' volume, 0..=1 (1 the default).
+    pub sound_volume: f32,
+    /// Per action (in `Action::ALL` order): two bindings.
+    pub bindings: Vec<(Action, [Option<Binding>; 2])>,
+    /// VR: each `VrAction`'s button (in `VrAction::ALL` order).
+    pub vr_buttons: [VrButton; 7],
+    /// How often each kind of pickup (by its `PickupKind::id`) was taken so far, counted up to
+    /// `EXPLAINED`: its announcement says what it does until then.
+    pub taken: Vec<(String, u32)>,
+    /// The first-match hints shown already (by id).
+    pub hints: Vec<String>,
+}
+
+/// The VR snap turn's steps (degrees).
+pub const SNAP_TURNS: [f32; 2] = [30.0, 45.0];
+
+/// The field of view's range and default (degrees).
+pub const FOV_RANGE: (f32, f32) = (60.0, 110.0);
+pub const FOV_DEFAULT: f32 = 80.0;
+
+/// VR: the gun tilt's range and default (degrees), the holster's raise range (m), and the
+/// height offset's range (m).
+pub const GUN_TILT_RANGE: (f32, f32) = (0.0, 80.0);
+pub const GUN_TILT_DEFAULT: f32 = 40.0;
+pub const HOLSTER_RANGE: (f32, f32) = (-0.15, 0.15);
+pub const EYE_OFFSET_RANGE: (f32, f32) = (-0.5, 1.2);
+
+/// Pickups of a kind whose announcements explain it.
+pub const EXPLAINED: u32 = 3;
+
+/// How loud the sound effects are at the sound setting's 100 % (of how they were made).
+pub const SOUND_LEVEL: f32 = 0.2;
+
+/// What every sound effect's volume is multiplied by: the sound setting, at its full level
+/// `SOUND_LEVEL` (the default settings' without any).
+pub fn sound_gain(settings: Option<&Settings>) -> f32 {
+    SOUND_LEVEL * settings.map_or(1.0, |s| s.sound_volume)
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            name: String::new(),
+            sensitivity: 1.0,
+            invert_y: false,
+            invert_vehicle_y: false,
+            invert_flight_y: false,
+            fov: FOV_DEFAULT,
+            toggle_crouch: false,
+            head_bob: true,
+            objective_markers: true,
+            reflections: true,
+            left_handed: false,
+            gun_tilt: GUN_TILT_DEFAULT,
+            holster_dy: 0.0,
+            haptics: 1.0,
+            steer_hand: false,
+            eye_offset: 0.0,
+            snap_turn: 0.0,
+            vignette: false,
+            sound_volume: 1.0,
+            bindings: Action::ALL.iter().map(|&a| (a, a.defaults())).collect(),
+            vr_buttons: VrAction::ALL.map(VrAction::default_button),
+            taken: Vec::new(),
+            hints: Vec::new(),
+        }
+    }
+}
+
+/// The input state, to ask about actions.
+pub struct Inputs<'a> {
+    pub keys: &'a ButtonInput<KeyCode>,
+    pub mouse: &'a ButtonInput<MouseButton>,
+    pub wheel: WheelState,
+}
+
+/// The mouse wheel as a button: `held` from rolling it up until rolling it down (kept by
+/// whoever reads the input), `up` and `down` this frame's rolls.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct WheelState {
+    pub held: bool,
+    pub up: bool,
+    pub down: bool,
+}
+
+impl WheelState {
+    /// This frame's wheel, rolled `dy` (up positive), latching `held`.
+    pub fn roll(held: &mut bool, dy: f32) -> WheelState {
+        let (up, down) = (dy > 0.0, dy < 0.0);
+        if up {
+            *held = true;
+        } else if down {
+            *held = false;
+        }
+        WheelState {
+            held: *held,
+            up,
+            down,
+        }
+    }
+}
+
+impl Settings {
+    /// Whether hint `id` was shown already.
+    pub fn hinted(&self, id: &str) -> bool {
+        self.hints.iter().any(|h| h == id)
+    }
+
+    /// Hint `id` shown (saved).
+    pub fn hint(&mut self, id: &str) {
+        if !self.hinted(id) {
+            self.hints.push(id.to_string());
+            self.save();
+        }
+    }
+
+    pub fn get(&self, a: Action) -> [Option<Binding>; 2] {
+        self.bindings
+            .iter()
+            .find(|(b, _)| *b == a)
+            .map_or([None, None], |(_, b)| *b)
+    }
+
+    pub fn set(&mut self, a: Action, slot: usize, b: Option<Binding>) {
+        // A key does one thing: taken away from wherever else it was.
+        if let Some(b) = b {
+            for (_, bs) in &mut self.bindings {
+                for s in bs.iter_mut() {
+                    if *s == Some(b) {
+                        *s = None;
+                    }
+                }
+            }
+        }
+        if let Some((_, bs)) = self.bindings.iter_mut().find(|(x, _)| *x == a) {
+            bs[slot] = b;
+        }
+    }
+
+    /// The button `a` is on in VR.
+    pub fn vr(&self, a: VrAction) -> VrButton {
+        self.vr_buttons[VrAction::ALL.iter().position(|&x| x == a).unwrap_or(0)]
+    }
+
+    pub fn set_vr(&mut self, a: VrAction, b: VrButton) {
+        if let Some(k) = VrAction::ALL.iter().position(|&x| x == a) {
+            self.vr_buttons[k] = b;
+        }
+    }
+
+    /// `a`'s button one step on (or back) among its choices.
+    pub fn step_vr(&mut self, a: VrAction, forward: bool) {
+        let c = a.choices();
+        let k = c.iter().position(|&b| b == self.vr(a)).unwrap_or(0);
+        let n = c.len();
+        let k = if forward {
+            (k + 1) % n
+        } else {
+            (k + n - 1) % n
+        };
+        self.set_vr(a, c[k]);
+    }
+
+    /// Another VR action on `a`'s button that isn't meant to share it.
+    pub fn vr_clash(&self, a: VrAction) -> Option<VrAction> {
+        let b = self.vr(a);
+        (b != VrButton::Unbound)
+            .then(|| {
+                VrAction::ALL
+                    .into_iter()
+                    .find(|&o| o != a && !a.shares_with(o) && self.vr(o) == b)
+            })
+            .flatten()
+    }
+
+    /// The button `a` is on with dual pistols, where both hands hold one: the shield on the
+    /// dash's button, the gadget on the grenade's (no grenades then), if they were on the free
+    /// hand (the dash moves to a quick second jump then).
+    pub fn vr_dual(&self, a: VrAction) -> VrButton {
+        let own = self.vr(a);
+        let instead = match a {
+            VrAction::Shield => VrAction::Dash,
+            VrAction::Gadget => VrAction::Grenade,
+            _ => return own,
+        };
+        if !own.free_hand() {
+            return own;
+        }
+        match self.vr(instead) {
+            b if b.free_hand() || b == VrButton::Unbound => instead.default_button(),
+            b => b,
+        }
+    }
+
+    fn any(&self, a: Action, f: impl Fn(Binding) -> bool) -> bool {
+        self.get(a).iter().flatten().any(|&b| f(b))
+    }
+
+    pub fn pressed(&self, a: Action, i: &Inputs) -> bool {
+        self.any(a, |b| match b {
+            Binding::Key(k) => i.keys.pressed(k),
+            Binding::Mouse(m) => i.mouse.pressed(m),
+            Binding::Wheel => i.wheel.held,
+        })
+    }
+
+    pub fn just_pressed(&self, a: Action, i: &Inputs) -> bool {
+        self.any(a, |b| match b {
+            Binding::Key(k) => i.keys.just_pressed(k),
+            Binding::Mouse(m) => i.mouse.just_pressed(m),
+            Binding::Wheel => i.wheel.up,
+        })
+    }
+
+    pub fn just_released(&self, a: Action, i: &Inputs) -> bool {
+        self.any(a, |b| match b {
+            Binding::Key(k) => i.keys.just_released(k),
+            Binding::Mouse(m) => i.mouse.just_released(m),
+            Binding::Wheel => i.wheel.down,
+        })
+    }
+
+    /// The names of an action's bindings ("W / Up"), or "-" if it has none.
+    pub fn describe(&self, a: Action) -> String {
+        let names: Vec<String> = self.get(a).iter().flatten().map(|b| b.name()).collect();
+        if names.is_empty() {
+            "-".into()
+        } else {
+            names.join(" / ")
+        }
+    }
+
+    /// The saved settings' text.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_saved() -> Option<String> {
+        Self::path().and_then(|p| std::fs::read_to_string(p).ok())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn write_saved(text: &str) {
+        let Some(path) = Self::path() else { return };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Err(e) = std::fs::write(&path, text) {
+            warn!("can't save {}: {e}", path.display());
+        }
+    }
+
+    /// The browser build keeps them in the site's localStorage.
+    #[cfg(target_arch = "wasm32")]
+    fn read_saved() -> Option<String> {
+        crate::web::load(STORAGE_KEY)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn write_saved(text: &str) {
+        if let Err(e) = crate::web::store(STORAGE_KEY, text) {
+            warn!("can't save the settings: {e}");
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn path() -> Option<PathBuf> {
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+        Some(base.join("neon-planetstrike").join("settings.ron"))
+    }
+
+    /// A volume one step (10 %) up or down.
+    pub fn step_volume(v: f32, up: bool) -> f32 {
+        ((v * 10.0).round() + if up { 1.0 } else { -1.0 }).clamp(0.0, 10.0) / 10.0
+    }
+
+    pub fn load() -> Settings {
+        let mut s = Settings::default();
+        let Some(text) = Self::read_saved() else {
+            return s;
+        };
+        match ron::from_str::<Saved>(&text) {
+            Ok(saved) => {
+                s.name = clean_name(&saved.name);
+                s.sensitivity = saved.sensitivity.clamp(0.1, 5.0);
+                s.invert_y = saved.invert_y;
+                s.invert_vehicle_y = saved.invert_vehicle_y;
+                s.invert_flight_y = saved.invert_flight_y;
+                s.fov = saved.fov.clamp(FOV_RANGE.0, FOV_RANGE.1);
+                s.toggle_crouch = saved.toggle_crouch;
+                s.head_bob = saved.head_bob;
+                s.objective_markers = saved.objective_markers;
+                s.reflections = saved.reflections;
+                s.left_handed = saved.left_handed;
+                s.gun_tilt = saved.gun_tilt.clamp(GUN_TILT_RANGE.0, GUN_TILT_RANGE.1);
+                s.holster_dy = saved.holster_dy.clamp(HOLSTER_RANGE.0, HOLSTER_RANGE.1);
+                s.haptics = saved.haptics.clamp(0.0, 1.0);
+                s.steer_hand = saved.steer_hand;
+                s.snap_turn = if SNAP_TURNS.contains(&saved.snap_turn) {
+                    saved.snap_turn
+                } else {
+                    0.0
+                };
+                s.vignette = saved.vignette;
+                s.eye_offset = saved
+                    .eye_offset
+                    .clamp(EYE_OFFSET_RANGE.0, EYE_OFFSET_RANGE.1);
+                s.sound_volume = saved.sound_volume.clamp(0.0, 1.0);
+                s.taken = saved.taken;
+                s.hints = saved.hints;
+                for (id, name) in saved.vr_buttons {
+                    if let Some(&a) = VrAction::ALL.iter().find(|a| a.id() == id)
+                        && let Some(&b) = VrButton::ALL.iter().find(|b| b.id() == name)
+                        && a.choices().contains(&b)
+                    {
+                        s.set_vr(a, b);
+                    }
+                }
+                for (id, names) in saved.bindings {
+                    if let Some(a) = Action::ALL.iter().find(|a| a.id() == id)
+                        && let Some((_, bs)) = s.bindings.iter_mut().find(|(x, _)| x == a)
+                    {
+                        for (slot, n) in names.iter().enumerate().take(2) {
+                            bs[slot] = n.as_deref().and_then(Binding::parse);
+                        }
+                    }
+                }
+            }
+            Err(e) => warn!("settings: {e}"),
+        }
+        s
+    }
+
+    pub fn save(&self) {
+        let saved = Saved {
+            name: self.name.clone(),
+            sensitivity: self.sensitivity,
+            invert_y: self.invert_y,
+            invert_vehicle_y: self.invert_vehicle_y,
+            invert_flight_y: self.invert_flight_y,
+            fov: self.fov,
+            toggle_crouch: self.toggle_crouch,
+            head_bob: self.head_bob,
+            objective_markers: self.objective_markers,
+            reflections: self.reflections,
+            left_handed: self.left_handed,
+            gun_tilt: self.gun_tilt,
+            holster_dy: self.holster_dy,
+            haptics: self.haptics,
+            steer_hand: self.steer_hand,
+            snap_turn: self.snap_turn,
+            vignette: self.vignette,
+            eye_offset: self.eye_offset,
+            sound_volume: self.sound_volume,
+            bindings: self
+                .bindings
+                .iter()
+                .map(|(a, bs)| {
+                    (
+                        a.id().to_string(),
+                        bs.iter().map(|b| b.map(|b| b.name())).collect(),
+                    )
+                })
+                .collect(),
+            vr_buttons: VrAction::ALL
+                .iter()
+                .map(|&a| (a.id().to_string(), self.vr(a).id().to_string()))
+                .collect(),
+            taken: self.taken.clone(),
+            hints: self.hints.clone(),
+        };
+        let text = match ron::ser::to_string_pretty(&saved, ron::ser::PrettyConfig::default()) {
+            Ok(t) => t,
+            Err(e) => return warn!("settings: {e}"),
+        };
+        Self::write_saved(&text);
+    }
+}
+
+/// The longest name (the server cuts longer ones: ps-net's server.rs).
+pub const NAME_MAX: usize = 24;
+
+/// Whether `c` may be typed into a name (the menus' font has the ASCII glyphs).
+pub fn name_char(c: char) -> bool {
+    c.is_ascii_graphic() || c == ' '
+}
+
+/// A name as kept: its typeable characters, trimmed, at most `NAME_MAX` long.
+pub fn clean_name(s: &str) -> String {
+    let s: String = s.chars().filter(|&c| name_char(c)).take(NAME_MAX).collect();
+    s.trim().to_string()
+}
+
+/// The browser build's localStorage key for the settings (the native file's text).
+#[cfg(target_arch = "wasm32")]
+const STORAGE_KEY: &str = "planetstrike/settings.ron";
+
+/// The file's contents (names rather than key codes, so it reads well and survives updates).
+#[derive(Serialize, Deserialize)]
+#[serde(default)]
+struct Saved {
+    name: String,
+    sensitivity: f32,
+    invert_y: bool,
+    invert_vehicle_y: bool,
+    invert_flight_y: bool,
+    fov: f32,
+    toggle_crouch: bool,
+    head_bob: bool,
+    objective_markers: bool,
+    reflections: bool,
+    left_handed: bool,
+    gun_tilt: f32,
+    holster_dy: f32,
+    haptics: f32,
+    steer_hand: bool,
+    eye_offset: f32,
+    snap_turn: f32,
+    vignette: bool,
+    sound_volume: f32,
+    bindings: Vec<(String, Vec<Option<String>>)>,
+    vr_buttons: Vec<(String, String)>,
+    taken: Vec<(String, u32)>,
+    hints: Vec<String>,
+}
+
+impl Default for Saved {
+    fn default() -> Self {
+        Saved {
+            name: String::new(),
+            sensitivity: 1.0,
+            invert_y: false,
+            invert_vehicle_y: false,
+            invert_flight_y: false,
+            fov: FOV_DEFAULT,
+            toggle_crouch: false,
+            head_bob: true,
+            objective_markers: true,
+            reflections: true,
+            left_handed: false,
+            gun_tilt: GUN_TILT_DEFAULT,
+            holster_dy: 0.0,
+            haptics: 1.0,
+            steer_hand: false,
+            eye_offset: 0.0,
+            snap_turn: 0.0,
+            vignette: false,
+            sound_volume: 1.0,
+            bindings: Vec::new(),
+            vr_buttons: Vec::new(),
+            taken: Vec::new(),
+            hints: Vec::new(),
+        }
+    }
+}
+
+/// Where the game keeps its files (settings, the offline worlds), made if missing.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn data_dir() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    let dir = base.join("neon-planetstrike");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bindings_round_trip_by_name() {
+        for (k, n) in KEYS {
+            assert_eq!(Binding::parse(n), Some(Binding::Key(*k)));
+        }
+        for (b, n) in BUTTONS {
+            assert_eq!(Binding::parse(n), Some(Binding::Mouse(*b)));
+        }
+        assert_eq!(Binding::parse(WHEEL), Some(Binding::Wheel));
+    }
+
+    #[test]
+    fn names_are_cleaned() {
+        assert_eq!(clean_name("  Neo\n "), "Neo");
+        assert_eq!(clean_name(&"x".repeat(40)).len(), NAME_MAX);
+        assert_eq!(clean_name("\u{1F600}"), "");
+    }
+
+    #[test]
+    fn a_key_does_one_thing() {
+        let mut s = Settings::default();
+        s.set(Action::Fire, 1, Some(Binding::Key(KeyCode::KeyW)));
+        assert_eq!(s.get(Action::Forward)[0], None);
+        assert_eq!(s.get(Action::Fire)[1], Some(Binding::Key(KeyCode::KeyW)));
+    }
+
+    #[test]
+    fn vr_buttons_step_and_clash() {
+        let mut s = Settings::default();
+        // The menu shares the grenade's button by default: no clash.
+        assert!(VrAction::ALL.iter().all(|&a| s.vr_clash(a).is_none()));
+        s.step_vr(VrAction::Jump, true);
+        assert_eq!(s.vr(VrAction::Jump), VrButton::Secondary);
+        assert_eq!(s.vr_clash(VrAction::Jump), Some(VrAction::Grenade));
+        s.step_vr(VrAction::Jump, false);
+        assert_eq!(s.vr(VrAction::Jump), VrButton::Primary);
+        // Stepping back from the first choice wraps round; the menu is never unbound.
+        s.step_vr(VrAction::Menu, false);
+        assert_eq!(s.vr(VrAction::Menu), VrButton::Primary);
+        s.step_vr(VrAction::Menu, false);
+        assert_eq!(s.vr(VrAction::Menu), VrButton::RightStick);
+        assert!(!VrAction::Menu.choices().contains(&VrButton::Unbound));
+    }
+
+    #[test]
+    fn dual_pistols_move_the_free_hand_actions() {
+        let mut s = Settings::default();
+        assert_eq!(s.vr_dual(VrAction::Shield), VrButton::StickUp);
+        assert_eq!(s.vr_dual(VrAction::Gadget), VrButton::Secondary);
+        s.set_vr(VrAction::Dash, VrButton::RightStick);
+        assert_eq!(s.vr_dual(VrAction::Shield), VrButton::RightStick);
+        s.set_vr(VrAction::Shield, VrButton::Primary);
+        assert_eq!(s.vr_dual(VrAction::Shield), VrButton::Primary);
+    }
+}

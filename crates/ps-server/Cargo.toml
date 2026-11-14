@@ -1,0 +1,26 @@
+[package]
+name = "ps-server"
+version.workspace = true
+edition.workspace = true
+description = "The planetstrike server: the whole world, each continent on its own thread"
+
+[dependencies]
+ps-sim.workspace = true
+ps-net.workspace = true
+rand.workspace = true
+glam.workspace = true
+serde.workspace = true
+ron.workspace = true
+rusqlite = { version = "0.37", features = ["bundled"], optional = true }
+argon2 = { version = "0.5", optional = true }
+
+[features]
+default = ["accounts"]
+# Player accounts (log in or register) in an SQLite database: the dedicated server's.
+accounts = ["dep:rusqlite", "dep:argon2"]
+
+[dev-dependencies]
+serde_json.workspace = true
+ps-master-proto.workspace = true
+ps-master = { path = "../ps-master" }
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }

@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Windows installer (WiX v5), built by tools/msi.sh:
+     wix build packaging/windows/planetstrike.wxs -arch x64|arm64 \
+         -d Version=<cargo version> -d BinDir=target/<target>/release \
+         -d SrcDir=<the checkout, a Windows path> -o <out>.msi
+
+     Installs the game, its assets folder beside it (where the game looks for it,
+     src/assets.rs) and README.md into Program Files\Neon Planetstrike, with Start menu
+     shortcuts for the flat screen and VR. neon-planetstrike.exe needs no DLLs of its own:
+     bevy_mod_openxr links the OpenXR loader statically on Windows. Settings and the
+     log go to %APPDATA%\planetstrike and are kept on uninstall.
+     The UpgradeCode never changes: a new installer replaces the installed version. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+    <Package Name="Neon Planetstrike"
+             Manufacturer="dividebysandwich"
+             Version="$(var.Version)"
+             UpgradeCode="4DB247D8-8952-454B-83CE-D6BB61152092"
+             Language="1033"
+             Compressed="yes"
+             Scope="perMachine">
+
+        <!-- Same-version upgrades: every build of a branch has Cargo.toml's version. -->
+        <MajorUpgrade AllowSameVersionUpgrades="yes"
+                      DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+        <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+        <Property Id="ARPURLINFOABOUT" Value="https://github.com/dividebysandwich/neon-planetstrike" />
+        <!-- The icon in Installed apps; neon-planetstrike.exe has it built in (build.rs). -->
+        <Icon Id="planetstrike.ico" SourceFile="packaging/windows/planetstrike.ico" />
+        <Property Id="ARPPRODUCTICON" Value="planetstrike.ico" />
+
+        <StandardDirectory Id="ProgramFiles64Folder">
+            <Directory Id="INSTALLFOLDER" Name="Neon Planetstrike">
+                <Component Id="MainExe" Guid="BF760A3C-55B7-440A-8154-C2641CF795C1">
+                    <File Id="GameExe" Source="$(var.BinDir)/neon-planetstrike.exe" KeyPath="yes" />
+                </Component>
+                <Component Id="Docs" Guid="3B9D37EC-F0BE-4BDD-8352-597CEFEF11BF">
+                    <File Id="ReadmeMd" Source="README.md" KeyPath="yes" />
+                </Component>
+                <Directory Id="AssetsFolder" Name="assets" />
+            </Directory>
+        </StandardDirectory>
+
+        <!-- The game's files (models, shaders, sounds, music, fonts), every file under
+             assets with its folders. -->
+        <ComponentGroup Id="Assets" Directory="AssetsFolder">
+            <Files Include="$(var.SrcDir)\assets\**" />
+        </ComponentGroup>
+
+        <!-- The game, and the game in an OpenXR headset (Arguments). -->
+        <StandardDirectory Id="ProgramMenuFolder">
+            <Component Id="StartMenuShortcuts" Guid="0778A5AE-4890-4B56-8A0F-4BB9760A69D6">
+                <Shortcut Id="GameShortcut"
+                          Name="Neon Planetstrike"
+                          Description="Red vs Blue planetstrike in neon arenas"
+                          Target="[INSTALLFOLDER]neon-planetstrike.exe"
+                          WorkingDirectory="INSTALLFOLDER" />
+                <Shortcut Id="VrShortcut"
+                          Name="Neon Planetstrike VR"
+                          Description="Neon Planetstrike in an OpenXR headset"
+                          Target="[INSTALLFOLDER]neon-planetstrike.exe"
+                          Arguments="--vr"
+                          WorkingDirectory="INSTALLFOLDER" />
+                <RegistryValue Root="HKCU" Key="Software\neon-planetstrike" Name="Shortcuts" Type="integer" Value="1" KeyPath="yes" />
+            </Component>
+        </StandardDirectory>
+
+        <Feature Id="Main">
+            <ComponentRef Id="MainExe" />
+            <ComponentRef Id="Docs" />
+            <ComponentGroupRef Id="Assets" />
+            <ComponentRef Id="StartMenuShortcuts" />
+        </Feature>
+    </Package>
+</Wix>

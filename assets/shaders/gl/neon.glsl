@@ -1,0 +1,276 @@
+// Neon accents and their glow halos for the OpenGL headset renderer (src/glvr): the GL port of
+// assets/shaders/neon.wgsl (keep the two in step). Compiled with VERTEX or FRAGMENT defined,
+// and GLOW for the halos; both eyes in one pass (GL_OVR_multiview2).
+//
+// There is no bloom here (one pass straight into the headset's image): the HDR colour is
+// mapped to the display's range in the shader, keeping its hue, so the strips look bright and
+// saturated instead of clipping to white; the halos (blended ONE, ONE) stand in for the bloom.
+
+uniform mat4 u_view_proj[2];
+uniform mat4 u_model;
+// The material: rgb fixed colour (modes 1, 2), a intensity; x mode (0 team by position and
+// vertex tint, 1 fixed colour, 2 fixed colour flowing along uv.x, 3 the vertex colour), w half
+// length of the arena (m).
+uniform vec4 u_colour;
+uniform vec4 u_params;
+// The frame: time (s), team colours, event pulses (xyz origin, w start time, negative: unused;
+// rgb colour).
+uniform float u_time;
+uniform vec3 u_red;
+uniform vec3 u_blue;
+uniform vec4 u_pulse_pos[8];
+uniform vec4 u_pulse_colour[8];
+// x: halo shape (0 strip, 1 volume: fades edge on, 2 haze, 3 forcefield), y: flow speed (m/s,
+// mode 2).
+uniform vec4 u_extra;
+uniform vec3 u_eye[2];
+// Shots near the eye: xyz, w strength (0: none). They light up the dimmed lights near them.
+uniform vec4 u_shots[8];
+// How dark each quarter of the arena is (a blackout breaker's): +x+z, +x-z, -x+z, -x-z.
+uniform vec4 u_zones;
+
+#ifdef VERTEX
+layout(num_views = NUM_VIEWS) in;
+layout(location = 0) in vec3 a_position;
+layout(location = 1) in vec3 a_normal;
+layout(location = 2) in vec2 a_uv;
+layout(location = 3) in vec4 a_tint;
+out vec3 v_world;
+out vec3 v_normal;
+out vec2 v_uv;
+out vec4 v_tint;
+out vec3 v_eye;
+
+void main() {
+    vec4 world = u_model * vec4(a_position, 1.0);
+    v_world = world.xyz;
+    v_normal = mat3(u_model) * a_normal;
+    v_uv = a_uv;
+    v_tint = a_tint;
+    v_eye = u_eye[VIEW];
+    gl_Position = u_view_proj[VIEW] * world;
+}
+#endif
+
+#ifdef FRAGMENT
+in vec3 v_world;
+in vec3 v_normal;
+in vec2 v_uv;
+in vec4 v_tint;
+in vec3 v_eye;
+layout(location = 0) out vec4 o_colour;
+
+float hash2(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+// Smooth value noise, about 0..1.
+float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = hash2(i);
+    float b = hash2(i + vec2(1.0, 0.0));
+    float c = hash2(i + vec2(0.0, 1.0));
+    float d = hash2(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// Streaks of light along the accents (see neon.wgsl).
+float streaks(vec3 world, float t) {
+    vec2 block = floor(world.xz / 8.0);
+    float band = floor(world.y / 0.6);
+    vec2 key = block * 1.7 + vec2(band * 5.3, band * 2.9);
+    float slot = 3.5;
+    float phase = hash2(key + 0.5) * 9.0;
+    float n = floor(t / slot + phase);
+    float local = fract(t / slot + phase) * slot;
+    if (hash2(key + n * 1.31) > 0.22) {
+        return 0.0;
+    }
+    float dir = hash2(key + n * 2.17) > 0.5 ? 1.0 : -1.0;
+    float along = dir * (world.x + world.z - (block.x + block.y) * 8.0 - 8.0);
+    float head = -10.0 + local * 26.0;
+    float d = head - along;
+    if (d < 0.0) {
+        return 0.0;
+    }
+    return exp(-d * 0.9) * (1.0 + 2.0 * exp(-d * 8.0));
+}
+
+float world_xz_noise(vec3 world, float t) {
+    float n = vnoise(world.xz * 0.11 + vec2(t * 0.05, t * 0.02)) * 0.65
+        + vnoise(world.xz * 0.27 - vec2(t * 0.08, -t * 0.04)) * 0.35;
+    return smoothstep(0.5, 0.9, n);
+}
+
+vec3 neon_colour(vec3 world) {
+    float t = u_time;
+    float half_len = u_params.w;
+    vec3 base;
+    if (u_params.x < 0.5) {
+        float k = smoothstep(-0.12, 0.12, world.z);
+        base = mix(u_blue, u_red, k);
+        base = mix(base, v_tint.rgb, v_tint.a);
+        // Waves from each base towards the centre: a sharp front with a fading tail.
+        float from_base = half_len - abs(world.z);
+        float jitter = hash2(floor(world.xz * 0.5)) * 0.6;
+        float w = fract((from_base - t * 9.0) / 22.0 + jitter * 0.05);
+        float wave = smoothstep(0.0, 0.03, w) * exp(-w * 14.0);
+        // (Dimmed accents, whose tint is darker than full colour, get a dimmer white too.)
+        float level = mix(1.0, max(max(v_tint.r, v_tint.g), v_tint.b), v_tint.a);
+        base = base * (1.0 + 3.5 * wave) + vec3(wave * 0.6 * level);
+        // A slow shimmer so the accents feel alive.
+        base *= 0.85 + 0.15 * sin(t * 2.0 + world.x * 0.7 + world.y * 1.3 + jitter * 6.0);
+        base *= 0.55 + 0.75 * vnoise(world.xz * 0.09 + vec2(t * 0.035, -t * 0.025));
+        float s = streaks(world, t) * (0.5 + 0.5 * level);
+        base = base * (1.0 + 3.0 * s) + vec3(s * 0.35 * level);
+    } else if (u_params.x < 1.5) {
+        base = u_colour.rgb;
+    } else if (u_params.x < 2.5) {
+        // Pulses running along the strip, a few per metre.
+        float w = fract(v_uv.x * 2.2 - t * u_extra.y);
+        float pulse = smoothstep(0.0, 0.06, w) * exp(-w * 5.0);
+        base = u_colour.rgb * (0.45 + 2.2 * pulse);
+    } else {
+        base = v_tint.rgb;
+    }
+    vec3 col = base * u_colour.a;
+    for (int i = 0; i < 8; i++) {
+        vec4 p = u_pulse_pos[i];
+        if (p.w < 0.0) {
+            continue;
+        }
+        float age = t - p.w;
+        if (age < 0.0 || age > 2.5) {
+            continue;
+        }
+        float r = age * 14.0;
+        float d = distance(world, p.xyz) - r;
+        float ring = exp(-d * d / 1.2) * (1.0 - age / 2.5);
+        col += u_pulse_colour[i].rgb * ring * 8.0;
+    }
+    return col;
+}
+
+// Distance from the middle of the hexagon of a lattice (cells 1 across): 0 at its middle, 0.5
+// on its edges; and the cell's id.
+vec3 hex(vec2 p) {
+    vec2 s = vec2(1.0, 1.7320508);
+    vec2 h = s * 0.5;
+    vec2 a = p - s * floor(p / s) - h;
+    vec2 pb = p - h;
+    vec2 b = pb - s * floor(pb / s) - h;
+    vec2 g = dot(a, a) < dot(b, b) ? a : b;
+    vec2 q = abs(g);
+    float d = max(q.x * 0.5 + q.y * 0.8660254, q.x);
+    return vec3(d, p - g);
+}
+
+// A forcefield (halo shape 3), as neon.wgsl's `shield`: x alpha, y brightness.
+vec2 shield(vec3 world, vec2 uv, vec3 n, vec3 to_eye, float t) {
+    vec2 p = vec2(world.x + world.z, world.y) * 3.2;
+    vec3 hx = hex(p);
+    float lines = smoothstep(0.40, 0.49, hx.x);
+    vec2 cell = hx.yz;
+    float spark = step(0.94, hash2(cell * 0.37 + floor(t * 5.0 + hash2(cell) * 3.0)))
+        * (1.0 - smoothstep(0.0, 0.45, hx.x));
+    float bands = pow(0.5 + 0.5 * sin(uv.y * 9.0 - t * 3.2), 10.0)
+        + 0.6 * pow(0.5 + 0.5 * sin(uv.y * 3.0 + t * 1.3 + uv.x * 2.0), 16.0);
+    float crawl = vnoise(p * 0.7 + vec2(t * 0.6, -t * 1.1));
+    float flicker = 0.85 + 0.15 * sin(t * 37.0 + crawl * 6.0);
+    float edge = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
+    float frame = 1.0 - smoothstep(0.0, 0.08, edge);
+    float facing = abs(dot(normalize(n), to_eye));
+    float a = 0.07 + 0.10 * crawl + lines * (0.22 + 0.25 * crawl) + spark * 0.55 + bands * 0.22;
+    a = (a * mix(1.8, 0.85, facing) + frame * 0.6) * flicker;
+    return vec2(clamp(a, 0.0, 1.0), 1.0 + bands * 1.5 + spark * 2.0);
+}
+
+// A cloaked player (halo shape 4), as neon.wgsl's `cloak`: alpha.
+float cloak(vec3 world, vec3 n, vec3 to_eye, float t) {
+    float facing = abs(dot(normalize(n), to_eye));
+    float rim = pow(1.0 - facing, 2.5);
+    vec2 p = vec2(world.x + world.z, world.y) * 7.0;
+    float crawl = vnoise(p + vec2(t * 0.7, -t * 1.6));
+    float ripple = 0.5 + 0.5 * sin(world.y * 22.0 - t * 5.0 + crawl * 4.0);
+    return clamp((0.03 + 0.55 * rim) * (0.5 + 0.9 * crawl) * (0.75 + 0.25 * ripple), 0.0, 1.0);
+}
+
+// HDR to the display's range: the brightest channel rolls off (1 - e^-x) with the others
+// scaled alongside (the hue kept), and very bright light goes towards white as a bloomed
+// core would.
+vec3 tone(vec3 c) {
+    c = max(c, vec3(0.0));
+    float m = max(max(c.r, c.g), c.b);
+    if (m <= 1e-5) {
+        return vec3(0.0);
+    }
+    float mapped = 1.0 - exp(-m);
+    vec3 hue = c * (mapped / m);
+    float white = smoothstep(2.5, 14.0, m) * 0.55;
+    return mix(hue, vec3(mapped), white);
+}
+
+// How much the shots light up a point (0..1): each within SHOT_REACH metres, more nearer.
+const float SHOT_REACH = 4.5;
+// How bright the arena's lights are at `p` by the breakers' dark quarters (soft across the
+// centre lines).
+const float ZONE_DIM = 0.015;
+float zone_light(vec3 p) {
+    float ax = smoothstep(-0.6, 0.6, p.x);
+    float az = smoothstep(-0.6, 0.6, p.z);
+    vec4 w = vec4(ax * az, ax * (1.0 - az), (1.0 - ax) * az, (1.0 - ax) * (1.0 - az));
+    return mix(1.0, ZONE_DIM, clamp(dot(w, u_zones), 0.0, 1.0));
+}
+
+float shot_light(vec3 p) {
+    float l = 0.0;
+    for (int i = 0; i < 8; i++) {
+        vec4 s = u_shots[i];
+        if (s.w > 0.0) {
+            float k = max(1.0 - distance(p, s.xyz) / SHOT_REACH, 0.0);
+            l += s.w * k * k;
+        }
+    }
+    return min(l, 1.0);
+}
+
+void main() {
+    // (The arena's own lights dim in a blackout: extra.z marks them, extra.w is how bright.)
+    // (Shots light them up again around them.)
+    float lit = u_extra.w;
+    if (u_extra.z > 0.5) {
+        lit = min(lit, zone_light(v_world));
+    }
+    if (u_extra.z > 0.5 && lit < 0.99) {
+        lit = max(lit, shot_light(v_world));
+    }
+    vec3 col = neon_colour(v_world) * mix(1.0, lit, u_extra.z);
+#ifdef GLOW
+    if (u_extra.x > 3.5) {
+        float a = cloak(v_world, v_normal, normalize(v_eye - v_world), u_time);
+        o_colour = vec4(tone(col * a), a);
+        return;
+    }
+    if (u_extra.x > 2.5) {
+        vec2 f = shield(v_world, v_uv, v_normal, normalize(v_eye - v_world), u_time);
+        o_colour = vec4(tone(col * f.y * f.x), f.x);
+        return;
+    }
+    // Halo: fades out away from the accent (uv.y 0 at the strip, 1 at the outer edge).
+    float v = clamp(v_uv.y, 0.0, 1.0);
+    float a = (1.0 - v) * (1.0 - v) * 0.35;
+    if (u_extra.x > 0.5 && u_extra.x < 1.5) {
+        float facing = abs(dot(normalize(v_normal), normalize(v_eye - v_world)));
+        a *= facing * facing;
+    }
+    if (u_extra.x > 1.5 && u_extra.x < 2.5) {
+        a *= world_xz_noise(v_world, u_time);
+    }
+    o_colour = vec4(tone(col * a), a);
+#else
+    o_colour = vec4(tone(col), 1.0);
+#endif
+}
+#endif

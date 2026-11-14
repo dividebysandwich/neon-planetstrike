@@ -1,0 +1,507 @@
+//! VR on any OpenXR runtime (`--vr`) through bevy_mod_openxr: Bevy's renderer draws the
+//! eyes (with bloom); controllers and the head are read into `vr::XrInput`. The action set
+//! and bindings follow stealth-mission-89's src/xr.rs.
+
+use bevy::camera::Hdr;
+use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::post_process::bloom::Bloom;
+use bevy::prelude::*;
+use bevy_mod_openxr::action_binding::{OxrSendActionBindings, OxrSuggestActionBinding};
+use bevy_mod_openxr::action_set_attaching::OxrAttachActionSet;
+use bevy_mod_openxr::action_set_syncing::{OxrActionSetSyncSet, OxrSyncActionSet};
+use bevy_mod_openxr::exts::OxrEnabledExtensions;
+use bevy_mod_openxr::init::OxrInitPlugin;
+use bevy_mod_openxr::resources::OxrInstance;
+use bevy_mod_openxr::session::OxrSession;
+use bevy_mod_openxr::spaces::OxrSpaceLocationFlags;
+use bevy_mod_openxr::{add_xr_plugins, openxr_session_running};
+use bevy_mod_xr::camera::XrCamera;
+use bevy_mod_xr::session::{
+    XrPreDestroySession, XrSessionCreated, XrTrackingRoot, session_available,
+};
+use bevy_mod_xr::spaces::XrSpaceSyncSet;
+use openxr::{Haptic, Posef};
+
+use crate::game::InputSet;
+use crate::vr::{FRAME_EXT, FRAME_PROFILE, VrPlugin, XrInput, XrRig};
+
+/// Whether an OpenXR runtime with Vulkan (what bevy_mod_openxr renders with) is there, without
+/// creating an instance (which would start SteamVR).
+pub fn runtime_available() -> bool {
+    #[cfg(windows)]
+    let entry = Some(openxr::Entry::linked());
+    // SAFETY: loads the OpenXR loader library.
+    #[cfg(not(windows))]
+    let entry = unsafe { openxr::Entry::load() }.ok();
+    let Some(entry) = entry else {
+        info!("OpenXR: no loader");
+        return false;
+    };
+    match entry.enumerate_extensions() {
+        Ok(e) => e.khr_vulkan_enable2,
+        Err(e) => {
+            info!("OpenXR: no runtime ({e})");
+            false
+        }
+    }
+}
+
+/// The app's plugins for `--vr`; false if there is no runtime (play on the flat screen then).
+pub fn add_plugins(app: &mut App, asset_root: &str) -> bool {
+    if !runtime_available() {
+        return false;
+    }
+    // (The Steam Frame's controller profile, where the runtime has it: only offered extensions
+    // are enabled.)
+    let mut init = OxrInitPlugin::default();
+    init.exts.other.push(FRAME_EXT.to_vec());
+    app.add_plugins(
+        add_xr_plugins(
+            DefaultPlugins
+                .set(AssetPlugin {
+                    file_path: asset_root.to_string(),
+                    ..default()
+                })
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Neon Planetstrike (VR)".into(),
+                        ..default()
+                    }),
+                    ..default()
+                }),
+        )
+        .set(init),
+    )
+    .add_plugins((OxrInputPlugin, VrPlugin));
+    true
+}
+
+struct OxrInputPlugin;
+
+impl Plugin for OxrInputPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Startup, create_actions.run_if(session_available))
+            .add_systems(OxrSendActionBindings, suggest_bindings)
+            .add_systems(XrSessionCreated, (attach_set, spawn_hand_spaces))
+            .add_systems(XrPreDestroySession, despawn_hand_spaces)
+            .add_systems(
+                PreUpdate,
+                (
+                    sync_actions.before(OxrActionSetSyncSet),
+                    read.after(OxrActionSetSyncSet).after(XrSpaceSyncSet),
+                )
+                    .run_if(openxr_session_running)
+                    .run_if(resource_exists::<XrActions>),
+            )
+            .add_systems(Update, (setup_cameras, find_rig.before(InputSet)))
+            .add_systems(Update, head.before(InputSet))
+            .add_systems(Update, eye_shots.run_if(openxr_session_running))
+            .add_systems(
+                PostUpdate,
+                haptics
+                    .run_if(openxr_session_running)
+                    .run_if(resource_exists::<XrActions>),
+            );
+    }
+}
+
+#[derive(Resource)]
+struct XrActions {
+    set: openxr::ActionSet,
+    grip: openxr::Action<Posef>,
+    aim: openxr::Action<Posef>,
+    squeeze: openxr::Action<f32>,
+    trigger: openxr::Action<f32>,
+    primary: openxr::Action<bool>,
+    secondary: openxr::Action<bool>,
+    menu: openxr::Action<bool>,
+    thumbstick: openxr::Action<openxr::Vector2f>,
+    stick_click: openxr::Action<bool>,
+    haptic: openxr::Action<Haptic>,
+    hands: [openxr::Path; 2],
+}
+
+#[derive(Component)]
+struct HandSpace {
+    hand: usize,
+    aim: bool,
+}
+
+fn create_actions(instance: Res<OxrInstance>, mut commands: Commands) {
+    let result = (|| -> openxr::Result<XrActions> {
+        let hands = [
+            instance.string_to_path("/user/hand/left")?,
+            instance.string_to_path("/user/hand/right")?,
+        ];
+        let set = instance.create_action_set("planetstrike", "Planetstrike", 0)?;
+        Ok(XrActions {
+            grip: set.create_action("grip_pose", "Grip pose", &hands)?,
+            aim: set.create_action("aim_pose", "Aim pose", &hands)?,
+            squeeze: set.create_action("grab", "Hold the blaster", &hands)?,
+            trigger: set.create_action("fire", "Fire", &hands)?,
+            primary: set.create_action("primary", "A / X", &hands)?,
+            secondary: set.create_action("grenade", "Grenade (B / Y)", &hands)?,
+            menu: set.create_action("menu", "Menu", &hands)?,
+            thumbstick: set.create_action("thumbstick", "Move / turn", &hands)?,
+            stick_click: set.create_action("dash", "Dash (click the stick)", &hands)?,
+            haptic: set.create_action("haptic", "Haptics", &hands)?,
+            set,
+            hands,
+        })
+    })();
+    match result {
+        Ok(a) => commands.insert_resource(a),
+        Err(e) => error!("OpenXR actions: {e}"),
+    }
+}
+
+fn suggest_bindings(
+    actions: Option<Res<XrActions>>,
+    exts: Option<Res<OxrEnabledExtensions>>,
+    mut out: MessageWriter<OxrSuggestActionBinding>,
+) {
+    let Some(a) = actions else { return };
+    let frame = exts.is_some_and(|e| e.other.iter().any(|x| x == FRAME_EXT));
+    type B = Vec<std::borrow::Cow<'static, str>>;
+    let both = |s: &str| -> B {
+        vec![
+            format!("/user/hand/left/{s}").into(),
+            format!("/user/hand/right/{s}").into(),
+        ]
+    };
+    let per_hand = |l: &str, r: &str| -> B {
+        vec![
+            format!("/user/hand/left/{l}").into(),
+            format!("/user/hand/right/{r}").into(),
+        ]
+    };
+    let left = |s: &str| -> B { vec![format!("/user/hand/left/{s}").into()] };
+    // (profile, squeeze, trigger, primary, secondary, thumbstick, menu). Where the menu button
+    // is the grenade's, holding it opens the menu (src/vr.rs). The menu buttons: the left one
+    // recenters, the right one opens the menu.
+    let mut profiles: Vec<(&str, B, B, B, B, B, B)> = frame_profile(frame);
+    profiles.extend(vec![
+        (
+            "/interaction_profiles/oculus/touch_controller",
+            both("input/squeeze/value"),
+            both("input/trigger/value"),
+            per_hand("input/x/click", "input/a/click"),
+            per_hand("input/y/click", "input/b/click"),
+            both("input/thumbstick"),
+            left("input/menu/click"),
+        ),
+        (
+            "/interaction_profiles/valve/index_controller",
+            both("input/squeeze/value"),
+            both("input/trigger/value"),
+            both("input/a/click"),
+            both("input/b/click"),
+            both("input/thumbstick"),
+            vec![],
+        ),
+        (
+            "/interaction_profiles/htc/vive_controller",
+            both("input/squeeze/click"),
+            both("input/trigger/value"),
+            vec![],
+            both("input/menu/click"),
+            both("input/trackpad"),
+            vec![],
+        ),
+        (
+            "/interaction_profiles/microsoft/motion_controller",
+            both("input/squeeze/click"),
+            both("input/trigger/value"),
+            vec![],
+            both("input/menu/click"),
+            both("input/thumbstick"),
+            vec![],
+        ),
+        (
+            "/interaction_profiles/khr/simple_controller",
+            vec![],
+            both("input/select/click"),
+            vec![],
+            both("input/menu/click"),
+            vec![],
+            vec![],
+        ),
+    ]);
+    for (profile, squeeze, trigger, primary, secondary, stick, menu) in profiles {
+        let mut add = |action: openxr::sys::Action, bindings: B| {
+            if !bindings.is_empty() {
+                out.write(OxrSuggestActionBinding {
+                    action,
+                    interaction_profile: profile.into(),
+                    bindings,
+                });
+            }
+        };
+        add(a.grip.as_raw(), both("input/grip/pose"));
+        add(a.aim.as_raw(), both("input/aim/pose"));
+        add(a.haptic.as_raw(), both("output/haptic"));
+        add(a.squeeze.as_raw(), squeeze);
+        add(a.trigger.as_raw(), trigger);
+        add(a.primary.as_raw(), primary);
+        add(a.secondary.as_raw(), secondary);
+        add(a.thumbstick.as_raw(), stick);
+        add(a.menu.as_raw(), menu);
+        add(a.stick_click.as_raw(), stick_click(profile));
+    }
+}
+
+/// Clicking the stick (or the trackpad) in a profile (none in the Steam Frame's own, whose
+/// paths are uncertain: one the runtime refuses would lose the profile's other bindings).
+pub fn stick_click(profile: &str) -> Bindings {
+    let both = |s: &str| -> Bindings {
+        vec![
+            format!("/user/hand/left/{s}").into(),
+            format!("/user/hand/right/{s}").into(),
+        ]
+    };
+    match profile {
+        "/interaction_profiles/oculus/touch_controller"
+        | "/interaction_profiles/valve/index_controller"
+        | "/interaction_profiles/microsoft/motion_controller" => both("input/thumbstick/click"),
+        "/interaction_profiles/htc/vive_controller" => both("input/trackpad/click"),
+        _ => Vec::new(),
+    }
+}
+
+pub type Bindings = Vec<std::borrow::Cow<'static, str>>;
+
+/// The Steam Frame's controllers in their own profile (`frame`: the runtime has it), as SteamVR
+/// maps Touch onto them: the left D-pad is X (down) and Y (the rest), the right face buttons A
+/// and B (with X and Y), and the bumpers fire like the triggers. Its menu buttons are the left
+/// view button and the right menu button.
+#[allow(clippy::type_complexity)]
+pub fn frame_profile(
+    frame: bool,
+) -> Vec<(
+    &'static str,
+    Bindings,
+    Bindings,
+    Bindings,
+    Bindings,
+    Bindings,
+    Bindings,
+)> {
+    if !frame {
+        return Vec::new();
+    }
+    let l = |s: &str| -> std::borrow::Cow<'static, str> { format!("/user/hand/left/{s}").into() };
+    let r = |s: &str| -> std::borrow::Cow<'static, str> { format!("/user/hand/right/{s}").into() };
+    let both = |s: &str| vec![l(s), r(s)];
+    vec![(
+        FRAME_PROFILE,
+        both("input/squeeze/value"),
+        // (The bumpers pull the trigger too, as with SteamVR's Touch emulation.)
+        vec![
+            l("input/trigger/value"),
+            r("input/trigger/value"),
+            l("input/bumper/click"),
+            r("input/bumper/click"),
+        ],
+        vec![l("input/dpad_down/click"), r("input/a/click")],
+        vec![
+            l("input/dpad_up/click"),
+            l("input/dpad_left/click"),
+            l("input/dpad_right/click"),
+            r("input/b/click"),
+            r("input/x/click"),
+            r("input/y/click"),
+        ],
+        both("input/thumbstick"),
+        vec![l("input/view/click"), r("input/menu/click")],
+    )]
+}
+
+fn attach_set(actions: Option<Res<XrActions>>, mut attach: MessageWriter<OxrAttachActionSet>) {
+    if let Some(a) = actions {
+        attach.write(OxrAttachActionSet(a.set.clone()));
+    }
+}
+
+fn sync_actions(actions: Res<XrActions>, mut sync: MessageWriter<OxrSyncActionSet>) {
+    sync.write(OxrSyncActionSet(actions.set.clone()));
+}
+
+fn spawn_hand_spaces(
+    actions: Option<Res<XrActions>>,
+    session: Res<OxrSession>,
+    mut commands: Commands,
+) {
+    let Some(a) = actions else { return };
+    for hand in 0..2 {
+        for aim in [false, true] {
+            let action = if aim { &a.aim } else { &a.grip };
+            match session.create_action_space(action, a.hands[hand], Isometry3d::IDENTITY) {
+                Ok(space) => {
+                    commands.spawn((space, HandSpace { hand, aim }));
+                }
+                Err(e) => error!("OpenXR hand space: {e}"),
+            }
+        }
+    }
+}
+
+fn despawn_hand_spaces(mut commands: Commands, q: Query<Entity, With<HandSpace>>) {
+    for e in &q {
+        commands.entity(e).despawn();
+    }
+}
+
+fn read(
+    actions: Res<XrActions>,
+    session: Res<OxrSession>,
+    spaces: Query<(&HandSpace, &Transform, &OxrSpaceLocationFlags)>,
+    mut input: ResMut<XrInput>,
+) {
+    for (i, hand) in input.hands.iter_mut().enumerate() {
+        let path = actions.hands[i];
+        let f = |a: &openxr::Action<f32>| {
+            a.state(&session, path)
+                .map(|s| s.current_state)
+                .unwrap_or(0.0)
+        };
+        let b = |a: &openxr::Action<bool>| a.state(&session, path).is_ok_and(|s| s.current_state);
+        hand.squeeze = f(&actions.squeeze);
+        hand.trigger = f(&actions.trigger);
+        hand.primary = b(&actions.primary);
+        hand.secondary = b(&actions.secondary);
+        hand.menu = b(&actions.menu);
+        hand.stick_click = b(&actions.stick_click);
+        hand.stick = actions
+            .thumbstick
+            .state(&session, path)
+            .map_or(Vec2::ZERO, |s| {
+                Vec2::new(s.current_state.x, s.current_state.y)
+            });
+        hand.grip = None;
+        hand.aim = None;
+        for (s, tf, flags) in &spaces {
+            if s.hand == i && flags.pos_valid() && flags.rot_valid() {
+                if s.aim {
+                    hand.aim = Some(*tf);
+                } else {
+                    hand.grip = Some(*tf);
+                }
+            }
+        }
+    }
+}
+
+/// The head: between the two eye cameras (their transforms are in the tracking space).
+fn head(cams: Query<&Transform, With<XrCamera>>, mut input: ResMut<XrInput>) {
+    let n = cams.iter().len();
+    if n == 0 {
+        return;
+    }
+    let pos = cams.iter().map(|t| t.translation).sum::<Vec3>() / n as f32;
+    if pos == Vec3::ZERO {
+        return;
+    }
+    let rot = cams.iter().next().unwrap().rotation;
+    input.head = Some(Transform {
+        translation: pos,
+        rotation: rot,
+        ..default()
+    });
+}
+
+fn find_rig(
+    mut commands: Commands,
+    root: Query<Entity, With<XrTrackingRoot>>,
+    rig: Option<Res<XrRig>>,
+) {
+    if rig.is_none()
+        && let Ok(r) = root.single()
+    {
+        commands.insert_resource(XrRig(r));
+    }
+}
+
+/// The eye cameras' near plane (m): bevy_mod_xr's 0.1 cut away the scope's lens held up to
+/// the eye (src/scope.rs). As `--gl-vr`'s (src/glvr/render.rs).
+const EYE_NEAR: f32 = 0.05;
+
+/// The eye cameras: HDR with bloom (`PS_XR_BLOOM=0` turns it off), the near plane at
+/// `EYE_NEAR`; one of them listens.
+fn setup_cameras(
+    mut commands: Commands,
+    mut cams: Query<(Entity, &mut Projection), Added<XrCamera>>,
+    mut first: Local<bool>,
+) {
+    let bloom = std::env::var("PS_XR_BLOOM").map_or(true, |v| v != "0");
+    for (e, mut projection) in &mut cams {
+        if let Projection::Custom(custom) = &mut *projection
+            && let Some(p) = custom.get_mut::<bevy_mod_xr::camera::XrProjection>()
+        {
+            p.near = EYE_NEAR;
+        }
+        let mut c = commands.entity(e);
+        if bloom {
+            c.insert((
+                Hdr,
+                Tonemapping::AcesFitted,
+                Bloom {
+                    intensity: 0.2,
+                    ..Bloom::NATURAL
+                },
+            ));
+        } else {
+            c.insert(Tonemapping::None);
+        }
+        if !*first {
+            *first = true;
+            c.insert(crate::audio::listener());
+        }
+    }
+}
+
+/// This frame's vibrations (`XrInput::haptic`, set every frame while a pattern plays: each
+/// lasts a little longer than a frame).
+fn haptics(actions: Res<XrActions>, session: Res<OxrSession>, mut input: ResMut<XrInput>) {
+    for i in 0..2 {
+        let a = input.haptic[i];
+        if a > 0.0 {
+            let v = openxr::HapticVibration::new()
+                .amplitude(a.min(1.0))
+                .duration(openxr::Duration::from_nanos(crate::vr::HAPTIC_NANOS))
+                .frequency(openxr::FREQUENCY_UNSPECIFIED);
+            if let Err(e) = actions
+                .haptic
+                .apply_feedback(&session, actions.hands[i], &v)
+            {
+                debug!("haptics: {e}");
+            }
+            input.haptic[i] = 0.0;
+        }
+    }
+}
+
+/// `PS_XR_SHOT=<secs>`: saves both eyes' images that long into the run (xr-eye0.png, xr-eye1.png).
+fn eye_shots(mut commands: Commands, time: Res<Time>, mut done: Local<bool>) {
+    use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+    if *done {
+        return;
+    }
+    let Some(at) = std::env::var("PS_XR_SHOT")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+    else {
+        *done = true;
+        return;
+    };
+    if time.elapsed_secs() < at {
+        return;
+    }
+    *done = true;
+    for eye in 0..2 {
+        let handle =
+            bevy::camera::ManualTextureViewHandle(bevy_mod_openxr::render::XR_TEXTURE_INDEX + eye);
+        commands
+            .spawn(Screenshot::texture_view(handle))
+            .observe(save_to_disk(format!("xr-eye{eye}.png")));
+    }
+}
