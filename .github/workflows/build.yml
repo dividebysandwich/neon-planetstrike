@@ -1,0 +1,265 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Clippy once, on Linux with the most code (glvr, which includes xr). It only reports warnings,
+  # so a single platform is enough; it has its own job because its check build (metadata only)
+  # shares nothing with the release builds below.
+  clippy:
+    name: clippy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libx11-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --no-default-features --features neon-planetstrike/glvr
+
+  # The game per platform, built and tested in one go: the tests run in the release profile, so
+  # they reuse the release build's dependencies instead of compiling Bevy a second time (the dev
+  # profile builds dependencies at opt-level 3 too, with debuginfo). Builds drop the default
+  # `dev` feature (bevy/dynamic_linking).
+  # Packages: an archive with the game and its assets folder (tools/package.sh), on Linux an
+  # AppImage (tools/appimage.sh) and on Windows an MSI installer (tools/msi.sh). The aarch64
+  # Linux build is the Steam Frame's: its AppImage starts in VR (`--gl-vr`). The packages are
+  # uploaded before the tests run, so a failing test still leaves a build to try (the job, and a
+  # release, fail all the same).
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # glvr: OpenXR, plus our own OpenGL headset renderer (`--gl-vr`, Linux only).
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            features: glvr
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            features: glvr
+          # bevy_mod_openxr links the OpenXR loader statically on Windows.
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            features: xr
+          # No OpenXR on macOS (no runtime; bevy_mod_openxr doesn't build there).
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            features: ""
+    env:
+      # The same flags for the build and the tests, so they share every compiled crate.
+      CARGO_FLAGS: >-
+        --release --target ${{ matrix.target }} --workspace --no-default-features
+        ${{ matrix.features && format('--features neon-planetstrike/{0}', matrix.features) || '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config cmake libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev \
+            libx11-dev  # the OpenXR-SDK's configure step wants the Xlib headers
+
+      # The Linux packages ship the OpenXR loader (Apache 2.0, with its licence) beside the game,
+      # for systems without one (SteamOS, the Steam Frame). Built from Khronos's OpenXR-SDK:
+      # Khronos publishes no Linux build. The game's RUNPATH ($ORIGIN, build.rs) finds it first.
+      - name: Build the OpenXR loader (Linux)
+        if: runner.os == 'Linux'
+        run: tools/openxr_loader.sh --out openxr
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # Saved from main only: pull requests restore main's cache but don't add their own, which
+      # would push main's out of the repository's 10 GB.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build
+        shell: bash
+        run: cargo build $CARGO_FLAGS
+
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME//\//-}"
+          loader=()
+          [[ -d openxr ]] && loader=(--loader openxr)
+          tools/package.sh game ${{ matrix.target }} --version "$version" "${loader[@]}"
+          echo "name=planetstrike-$version-${{ matrix.target }}" >> "$GITHUB_OUTPUT"
+
+      - name: Package (AppImage)
+        if: runner.os == 'Linux'
+        run: |
+          tools/appimage.sh --binary target/${{ matrix.target }}/release/neon-planetstrike --loader openxr \
+            --version "${GITHUB_REF_NAME//\//-}"
+          ls -l dist
+
+      # The WiX CLI is a .NET tool; the runner has .NET but not WiX.
+      - name: Package (MSI)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          tools/msi.sh --target ${{ matrix.target }} --version "${GITHUB_REF_NAME//\//-}"
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.msi
+            dist/*.AppImage
+            dist/*.AppImage.zsync
+          if-no-files-found: error
+
+      - name: Test
+        shell: bash
+        run: cargo test $CARGO_FLAGS
+
+  # The dedicated server and the server list's master server, for Linux hosts.
+  servers:
+    name: servers
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: servers
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build
+        run: cargo build --release -p ps-server -p ps-master
+      - name: Package
+        id: package
+        run: |
+          version="${GITHUB_REF_NAME//\//-}"
+          tools/package.sh servers x86_64-unknown-linux-gnu --version "$version"
+          echo "name=planetstrike-$version-servers" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  # The browser build (docs/web.md): the page, the wasm (WebGPU, and WebGL2 in gl/) and the
+  # assets, zipped into one folder to unpack and serve as it is.
+  web:
+    name: wasm32 (browser)
+    runs-on: ubuntu-24.04
+    outputs:
+      name: ${{ steps.package.outputs.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm32
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Trunk fetches the matching wasm-bindgen and wasm-opt itself.
+      - uses: jetli/trunk-action@v0.5.0
+        with:
+          version: latest
+      - name: Build
+        run: trunk build --release
+      - name: Package
+        id: package
+        run: |
+          name="planetstrike-${GITHUB_REF_NAME//\//-}-web"
+          cp -r dist/web "dist/$name"
+          (cd dist && zip -qr "$name.zip" "$name")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: dist/${{ steps.package.outputs.name }}.zip
+          if-no-files-found: error
+
+  # The browser build on GitHub Pages (docs/web.md): each release, or a manual run of this
+  # workflow (Actions > Build > Run workflow). Releases only, as the page joins the servers
+  # players run, which are releases too.
+  pages:
+    name: GitHub Pages
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: web
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.web.outputs.name }}
+          path: dist
+      # Pages compresses by itself and wouldn't send the .gz copies as such: left out.
+      - name: Unpack
+        run: |
+          unzip -q "dist/${{ needs.web.outputs.name }}.zip" -d dist
+          find "dist/${{ needs.web.outputs.name }}" -name '*.gz' -delete
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/${{ needs.web.outputs.name }}
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [clippy, build, servers, web]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
