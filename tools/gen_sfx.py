@@ -246,17 +246,188 @@ def norm(x):
     return x / np.max(np.abs(x))
 
 
-def write(name, x, rms_db, loop=False):
-    """Writes `x` at the RMS level `rms_db` dBFS, the peaks softly limited under full scale
-    (`loop`: played round and round, so no fades at the ends)."""
+# ---------------------------------------------------------------- dynamics, space, layers
+
+def smooth(x, tau):
+    """`x` through a one-pole low-pass of time constant `tau` s (an envelope follower's
+    smoothing; padded, so nothing wraps round)."""
+    n = len(x)
+    pad = int(min(6 * tau, 2.0) * RATE) + 1
+    f = np.fft.rfftfreq(n + pad, 1.0 / RATE)
+    y = np.fft.irfft(np.fft.rfft(np.concatenate([x, np.zeros(pad)])) / (1.0 + 2j * np.pi * f * tau), n + pad)
+    return y[:n]
+
+
+def saturate(x, drive, bias=0.0):
+    """A tanh waveshaper (`drive`: how hard, 1 hardly at all; `bias`: asymmetry, for even
+    harmonics), at twice the sample rate against aliasing. The peak is kept."""
+    n = len(x)
+    peak = np.max(np.abs(x)) + 1e-12
+    spec = np.fft.rfft(x / peak)
+    up = np.fft.irfft(np.concatenate([spec, np.zeros(n - len(spec) + 1)]), 2 * n) * 2
+    y = np.tanh(drive * (up + bias)) - np.tanh(drive * bias)
+    y = np.fft.irfft(np.fft.rfft(y)[:len(spec)], n) / 2
+    return y * peak / (np.max(np.abs(y)) + 1e-12)
+
+
+def bands(x, split_hz):
+    """`x` split in three (low, mid, high) at the two frequencies of `split_hz`; they add up
+    to `x`."""
+    low = lowpass(x, split_hz[0], 4.0)
+    high = highpass(x, split_hz[1], 4.0)
+    return low, x - low - high, high
+
+
+def transient(x, attack_gain, sustain_gain, split_hz=(200, 2500)):
+    """A three-band transient shaper: each band's attacks raised by `attack_gain` (0: as they
+    are, 1: about twice as loud) and what follows them by `sustain_gain` (negative: tighter)."""
+    out = np.zeros(len(x))
+    for band, (fast, slow) in zip(bands(x, split_hz), ((0.004, 0.06), (0.0015, 0.03), (0.0005, 0.015))):
+        a = np.abs(band)
+        f, s = np.maximum(smooth(a, fast), 0), np.maximum(smooth(a, slow), 0)
+        k = (f - s) / (f + s + 1e-9)
+        out += band * (1.0 + attack_gain * np.clip(k, 0, 1) + sustain_gain * np.clip(-k, 0, 1))
+    return out
+
+
+def compress(x, thresh_db, ratio, attack=0.003, release=0.08, makeup=0.0):
+    """A compressor: levels over `thresh_db` (dB under the peak) reduced by `ratio`, coming on
+    over `attack` s and letting go over `release` s; `makeup` dB added after."""
+    peak = np.max(np.abs(x)) + 1e-12
+    a = np.abs(x) / peak
+    level = np.maximum(np.maximum(smooth(a, attack), smooth(a, release)), 1e-6)
+    over = np.maximum(20 * np.log10(level) - thresh_db, 0.0)
+    return x * 10 ** ((-over * (1 - 1 / ratio) + makeup) / 20)
+
+
+def sub(t, hz, decay, drop=0.3, attack=0.004):
+    """A sub-bass layer: a pure sine sagging in pitch by `drop`, swelling in over `attack` s
+    (no click of its own: the crack is another layer's)."""
+    x = seconds(t)
+    f = hz * (1 - drop * (1 - np.exp(-x / (decay * 1.5))))
+    return np.sin(2 * np.pi * phase(f)) * env(t, attack, decay)
+
+
+def _comb(x, delay, gain, damp):
+    """A feedback comb filter (`delay` samples, `damp`: how much duller each time round)."""
+    y = x.copy()
+    for i in range(delay + 1, len(y), delay):
+        j = min(i + delay, len(y))
+        y[i:j] += gain * ((1 - damp) * y[i - delay:j - delay] + damp * y[i - delay - 1:j - delay - 1])
+    return y
+
+
+def _allpass(x, delay, gain):
+    y = -gain * x
+    y[delay:] += x[:-delay]
+    for i in range(delay, len(y), delay):
+        j = min(i + delay, len(y))
+        y[i:j] += gain * y[i - delay:j - delay]
+    return y
+
+
+def reverb(x, size=1.0, decay=0.6, damp=0.35, mix=0.2, predelay=0.012):
+    """`x` in a space: four damped combs and two all-passes (`size`: the delays' scale, 1 a
+    hall; `decay`: s to fall 60 dB; `damp`: 0 bright, 1 dull; `mix`: how much of it;
+    `predelay` s before it starts). The length stays, so leave room for the tail."""
+    wet = np.zeros(len(x))
+    for d in (0.0297, 0.0371, 0.0411, 0.0437):
+        n = max(int(d * size * RATE), 8)
+        wet += _comb(x, n, 10 ** (-3.0 * n / RATE / decay), damp)
+    for d in (0.005, 0.0017):
+        wet = _allpass(wet, max(int(d * size * RATE), 4), 0.6)
+    wet = highpass(at(len(x) / RATE, predelay, wet), 120)[:len(x)]
+    return x + mix * wet * (np.sqrt(np.mean(x * x)) / (np.sqrt(np.mean(wet * wet)) + 1e-12))
+
+
+def slapback(x, delay, gain, hi=2500):
+    """One hard echo off a wall `delay` s later, `gain` as loud, dulled above `hi` Hz."""
+    return x + gain * at(len(x) / RATE, delay, lowpass(x, hi))
+
+
+def mech(T, kind):
+    """A gun's mechanism, peak about 1: `bolt` (a bolt slamming home), `servo` (a short motor
+    whir), `belt` (links rattling through), `tink` (a spent case ringing), `latch` (a catch
+    snapping), `slide` (a part racked back and forth), `clunk` (a heavy breech)."""
+    if kind == "bolt":
+        y = (click(T, 900, 7000, 0.004) + thump(T, 210, 0.012, drop=0.4) * 0.7
+             + ring(T, [1650, 2730, 4100], [0.012, 0.008, 0.005], [0.5, 0.35, 0.2]) * 0.6)
+    elif kind == "servo":
+        x = seconds(T)
+        f = 300 + 500 * np.sin(np.pi * np.clip(x / T, 0, 1)) ** 2
+        y = (saw(f) * 0.5 + square(f * 3.02, 0.4) * 0.2) * np.sin(np.pi * np.clip(x / T, 0, 1)) ** 0.5
+        y = lowpass(y, 3500) * (0.8 + 0.2 * np.sin(2 * np.pi * 47 * x))
+    elif kind == "belt":
+        y = crackle(T, 220, 1200, 6000) * 0.8 + ring(T, [2300, 3700], [0.004, 0.003], [0.3, 0.2]) * 0.3
+        y = y * env(T, 0.002, T * 0.5)
+    elif kind == "tink":
+        k = 0.9 + 0.2 * rng.random()
+        y = ring(T, [3900 * k, 6350 * k, 9100 * k], [0.03, 0.02, 0.012], [1.0, 0.6, 0.35]) * env(T, 0.0003, 0.05)
+        y = y + click(T, 4000, 12000, 0.0008) * 0.5
+    elif kind == "latch":
+        y = click(T, 1800, 9000, 0.0015) + ring(T, [2600, 3900], [0.008, 0.005], [0.5, 0.3])
+    elif kind == "slide":
+        h = T / 2
+        back = click(h, 700, 5000, 0.006) + noise(h, 1500, 6000) * env(h, 0.01, h * 0.3) * 0.25
+        fwd = click(h, 900, 7000, 0.004) + thump(h, 180, 0.015, drop=0.4) * 0.6
+        y = at(T, 0.0, back * 0.8) + at(T, h, fwd)
+    elif kind == "clunk":
+        y = (thump(T, 120, 0.035, drop=0.5) + click(T, 400, 4000, 0.008) * 0.8
+             + ring(T, [540, 930, 1480, 2300], [0.05, 0.035, 0.025, 0.015], [0.5, 0.4, 0.3, 0.2]) * 0.5)
+    else:
+        raise ValueError(kind)
+    return y / (np.max(np.abs(y)) + 1e-12)
+
+
+def far(x, tail=1.2, hi=900):
+    """`x` as heard from far off: the highs gone (above `hi` Hz), the attack softened, `tail`
+    s of rolling reverberation after it."""
+    y = np.concatenate([x, np.zeros(int(tail * RATE))])
+    y = lowpass(y, hi, 1.5)
+    y = smooth(y, 0.002) + 0.5 * smooth(y, 0.012)
+    y = reverb(y, size=2.2, decay=tail * 0.9, damp=0.6, mix=0.9, predelay=0.03)
+    return slapback(y, 0.19, 0.3, hi * 0.7)
+
+
+def window_rms(x, win=0.1):
+    """The RMS level of the loudest `win` s of `x`."""
+    n = min(int(win * RATE), len(x))
+    c = np.concatenate([[0.0], np.cumsum(x * x)])
+    return np.sqrt(np.max(c[n:] - c[:-n]) / n)
+
+
+CEILING = 10 ** (-1.0 / 20)
+KNEE = 0.6
+
+
+def soft_limit(x):
+    """Peaks over `KNEE` bent over towards `CEILING` (-1 dBFS); under it nothing is changed."""
+    a = np.abs(x)
+    over = KNEE + (CEILING - KNEE) * np.tanh((a - KNEE) / (CEILING - KNEE))
+    return np.sign(x) * np.where(a > KNEE, over, a)
+
+
+def write(name, x, level_db, loop=False, mode="rms"):
+    """Writes `x`, as loud as `level_db` dBFS. `mode` "rms": the whole sound's RMS, the peaks
+    softly limited under full scale (loops, tones, the older sounds). "peak": the RMS of its
+    loudest 100 ms, with a soft-knee limiter at -1 dBFS (one-shots: a long tail doesn't push
+    the crack into the limiter then). (`loop`: played round and round, so no fades at the
+    ends.)"""
     x = x - np.mean(x) if loop else fades(x - np.mean(x))
-    target = 10 ** (rms_db / 20)
-    limit = lambda g: 0.95 * np.tanh(x * g / 0.95)
+    target = 10 ** (level_db / 20)
+    if mode == "peak":
+        limit = lambda g: soft_limit(x * g)
+        measure = window_rms
+    else:
+        limit = lambda g: 0.95 * np.tanh(x * g / 0.95)
+        measure = lambda y: np.sqrt(np.mean(y ** 2))
     lo, hi = 0.0, 1e3 / np.max(np.abs(x))
     for _ in range(60):
         g = (lo + hi) / 2
-        lo, hi = (g, hi) if np.sqrt(np.mean(limit(g) ** 2)) < target else (lo, g)
+        lo, hi = (g, hi) if measure(limit(g)) < target else (lo, g)
     x = limit((lo + hi) / 2)
+    if not np.all(np.isfinite(x)):
+        sys.exit(f"{name}: not finite")
     pcm = np.round(np.clip(x, -1, 1) * 32767).astype("<i2").tobytes()
     path = os.path.join(OUT, name + EXT)
     codec = ["-c:a", "libvorbis", "-q:a", "6"] if EXT == ".ogg" else ["-compression_level", "12"]
@@ -265,7 +436,10 @@ def write(name, x, rms_db, loop=False):
          *codec, path],
         input=pcm, check=True)
     peak = 20 * np.log10(np.max(np.abs(x)))
-    print(f"{path}  {len(x) / RATE:.3f} s  rms {rms_db:.1f} dBFS  peak {peak:.1f} dBFS")
+    rms = 20 * np.log10(np.sqrt(np.mean(x ** 2)))
+    loud = 20 * np.log10(window_rms(x))
+    print(f"{path}  {len(x) / RATE:.3f} s  {mode} {level_db:.1f} dBFS  rms {rms:.1f}  "
+          f"loudest 100 ms {loud:.1f}  peak {peak:.1f} dBFS")
 
 
 # ---------------------------------------------------------------- sounds
@@ -1733,7 +1907,8 @@ def kill_confirm():
 
 
 SOUNDS = {
-    # name: (generator, RMS dBFS, seed)
+    # name: (generator, level dBFS, seed[, "peak"]): the level is the whole sound's RMS, or
+    # with "peak" that of its loudest 100 ms (see `write`).
     "footstep_1": (lambda: footstep(1), -27.0, 11),
     "footstep_2": (lambda: footstep(2), -27.0, 12),
     "footstep_3": (lambda: footstep(3), -27.0, 13),
@@ -1866,6 +2041,6 @@ if __name__ == "__main__":
         sys.exit(f"unknown sound(s): {', '.join(unknown)}; known: {', '.join(SOUNDS)}")
     os.makedirs(OUT, exist_ok=True)
     for name in wanted:
-        make, level, seed = SOUNDS[name]
+        make, level, seed, *mode = SOUNDS[name]
         rng = np.random.default_rng(seed)
-        write(name, make(), level, loop=name in LOOPS)
+        write(name, make(), level, loop=name in LOOPS, mode=mode[0] if mode else "rms")
