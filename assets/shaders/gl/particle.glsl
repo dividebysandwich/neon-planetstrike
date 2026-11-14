@@ -7,7 +7,8 @@ uniform mat4 u_view_proj[2];
 uniform mat4 u_model;
 // rgb: colour (HDR), a: opacity.
 uniform vec4 u_colour;
-// x: the look (0 puff, 1 glow), y: the noise's seed.
+// x: the look (0 puff, 1 glow, 2 streak, 3 ring), y: the noise's seed, z: a ring's width (of
+// its radius), w: 1 for no fading into what's behind (the flat screen's: nothing to do here).
 uniform vec4 u_params;
 
 #ifdef VERTEX
@@ -58,6 +59,24 @@ void main() {
     vec2 p = v_uv * 2.0 - 1.0;
     float d = length(p);
     vec4 c = u_colour;
+    if (u_params.x > 2.5) {
+        // The ring: a band just inside the quad's edge.
+        float w = max(u_params.z, 0.02);
+        float a = pow(clamp(1.0 - abs(d - (1.0 - w)) / w, 0.0, 1.0), 1.6);
+        vec3 rgb = c.rgb * (1.0 + 1.5 * a * a);
+        o_colour = vec4(tone(rgb * a * c.a), a * c.a);
+        return;
+    }
+    if (u_params.x > 1.5) {
+        // The streak: its head at +x, its tail thinning out behind.
+        float t = clamp(p.x * 0.5 + 0.5, 0.0, 1.0);
+        float across = pow(clamp(1.0 - abs(p.y) / mix(0.3, 1.0, t), 0.0, 1.0), 2.0);
+        float a = across * pow(t, 1.4) * clamp((1.0 - t) / 0.12, 0.0, 1.0);
+        float core = pow(a, 3.0);
+        vec3 rgb = c.rgb * (1.0 + 2.5 * core) + vec3(core * 1.5);
+        o_colour = vec4(tone(rgb * a * c.a), a * c.a);
+        return;
+    }
     if (u_params.x > 0.5) {
         float a = pow(clamp(1.0 - d, 0.0, 1.0), 1.8);
         float core = pow(a, 3.0);

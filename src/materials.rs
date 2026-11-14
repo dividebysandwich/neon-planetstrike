@@ -406,7 +406,9 @@ pub struct ParticleMaterial {
 pub struct ParticleUniform {
     /// rgb: colour (HDR), a: opacity.
     pub color: Vec4,
-    /// x: the look (`PARTICLE_PUFF` or `PARTICLE_GLOW`), y: the noise's seed.
+    /// x: the look (`PARTICLE_PUFF`, `PARTICLE_GLOW`, `PARTICLE_STREAK` or `PARTICLE_RING`),
+    /// y: the noise's seed, z: a ring's width (of its radius), w: 1 for no fading into what's
+    /// behind it (`flat`).
     pub params: Vec4,
 }
 
@@ -414,6 +416,11 @@ pub struct ParticleUniform {
 pub const PARTICLE_PUFF: f32 = 0.0;
 /// A glow with a hot core (fire, flashes).
 pub const PARTICLE_GLOW: f32 = 1.0;
+/// A glow drawn out along the quad's x: hot at its +x end, thinning out to the other (tracers'
+/// light, sparks, a muzzle flash's spikes).
+pub const PARTICLE_STREAK: f32 = 2.0;
+/// A glowing band at the quad's edge (a blast's shockwave).
+pub const PARTICLE_RING: f32 = 3.0;
 
 impl ParticleMaterial {
     pub fn puff(color: Vec3, opacity: f32, seed: f32) -> Self {
@@ -434,6 +441,34 @@ impl ParticleMaterial {
             },
             additive: true,
         }
+    }
+
+    pub fn streak(color: Vec3, opacity: f32) -> Self {
+        ParticleMaterial {
+            particle: ParticleUniform {
+                color: color.extend(opacity),
+                params: Vec4::new(PARTICLE_STREAK, 0.0, 0.0, 0.0),
+            },
+            additive: true,
+        }
+    }
+
+    /// A ring `width` of its radius wide.
+    pub fn ring(color: Vec3, opacity: f32, width: f32) -> Self {
+        ParticleMaterial {
+            particle: ParticleUniform {
+                color: color.extend(opacity),
+                params: Vec4::new(PARTICLE_RING, 0.0, width, 0.0),
+            },
+            additive: true,
+        }
+    }
+
+    /// Lying flat on what's behind it (a scorch mark, a ring on the ground): not faded out
+    /// where it nears that.
+    pub fn flat(mut self) -> Self {
+        self.particle.params.w = 1.0;
+        self
     }
 }
 
