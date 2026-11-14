@@ -24,6 +24,8 @@ const PX: f32 = 210.0;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BlipKind {
     Base,
+    /// A capture point (its holder's colour).
+    Point,
     Gate,
     Node,
     Friend,
@@ -51,6 +53,7 @@ impl BlipKind {
     pub fn size(self) -> f32 {
         match self {
             BlipKind::Base => 2.6,
+            BlipKind::Point => 1.5,
             BlipKind::Gate => 2.4,
             BlipKind::Node => 1.4,
             BlipKind::FriendVehicle | BlipKind::EnemyVehicle => 1.6,
@@ -97,6 +100,15 @@ pub fn blips(game: &Game, at: Vec3, range: f32) -> Vec<Blip> {
     for (bi, b) in map.bases.iter().enumerate() {
         let owner = game.state.base(c, bi as BaseIdx).owner;
         push(&mut out, b.center, BlipKind::Base, team_color(owner));
+    }
+    // (Over the bases.)
+    for (bi, b) in map.bases.iter().enumerate() {
+        let Some(ps) = game.snap.bases.get(bi).and_then(|s| s.points) else {
+            continue;
+        };
+        for (pt, p) in b.points.iter().zip(ps) {
+            push(&mut out, pt.pos, BlipKind::Point, team_color(p.owner));
+        }
     }
     for g in &map.gates {
         push(&mut out, *g, BlipKind::Gate, Vec3::new(0.4, 0.8, 1.0));

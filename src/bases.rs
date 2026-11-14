@@ -507,6 +507,7 @@ fn build(
     mut glows: ResMut<Assets<GlowMaterial>>,
     mut shown: ResMut<Shown>,
     old: Query<Entity, With<BasePart>>,
+    bars: Option<Res<crate::worldbar::BarAssets>>,
 ) {
     if arrived.read().last().is_none() {
         return;
@@ -605,6 +606,70 @@ fn build(
         if let Some((at, yaw)) = layout.console {
             let m = get("console_core", Vec3::new(1.1, 1.1, 1.1), &mut meshes);
             prop(&mut commands, &m, at, yaw);
+        }
+        // Capture points: a pylon each, its ring round the zone, its letter and bar over it;
+        // a bar over the console (or the base's middle) while it's being taken.
+        let pylon = get(
+            "capture_pylon",
+            Vec3::new(
+                2.0 * ps_sim::base::PYLON_R,
+                ps_sim::base::PYLON_H,
+                2.0 * ps_sim::base::PYLON_R,
+            ),
+            &mut meshes,
+        );
+        for (i, pt) in layout.points.iter().enumerate() {
+            prop(&mut commands, &pylon, pt.pylon, 0.0);
+            if let Some(bars) = &bars {
+                use crate::worldbar::{BarOf, spawn_bar, spawn_ring};
+                let top = pt.pylon + Vec3::Y * (ps_sim::base::PYLON_H + 1.0);
+                spawn_bar(
+                    &mut commands,
+                    bars,
+                    root,
+                    BarOf::Point(b, i as u8),
+                    top,
+                    1.8,
+                );
+                spawn_ring(&mut commands, bars, root, b, i as u8, pt.pos, pt.radius);
+            }
+        }
+        if let Some(bars) = &bars {
+            use crate::worldbar::{BarOf, spawn_bar};
+            if let Some((at, _)) = layout.console {
+                spawn_bar(
+                    &mut commands,
+                    bars,
+                    root,
+                    BarOf::Console(b),
+                    at + Vec3::Y * 2.9,
+                    1.6,
+                );
+            } else if !layout.points.is_empty() {
+                let at = layout.center + Vec3::Y * (layout.building.1.y - layout.center.y + 4.0);
+                spawn_bar(&mut commands, bars, root, BarOf::Console(b), at, 4.0);
+            }
+            if let Some(g) = layout.generator {
+                spawn_bar(
+                    &mut commands,
+                    bars,
+                    root,
+                    BarOf::Generator(b),
+                    g + Vec3::Y * 4.3,
+                    1.6,
+                );
+            }
+            for (i, &at) in layout.turrets.iter().enumerate() {
+                let at = at + Vec3::Y * (TURRET_PIVOT + 1.8);
+                spawn_bar(
+                    &mut commands,
+                    bars,
+                    root,
+                    BarOf::Turret(b, i as u8),
+                    at,
+                    1.4,
+                );
+            }
         }
         for &(at, yaw) in &layout.pads {
             let m = get("vehicle_pad", Vec3::new(14.0, 0.05, 14.0), &mut meshes);

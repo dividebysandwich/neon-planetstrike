@@ -76,6 +76,9 @@ symmetric:
     armour ribs; a window band y 1.4-3.3 m (eight team-framed openings between corner posts,
     open inside); an unloading hopper with a recessed mouth facing -Z; team belt, roof cone
     and a mast with a white beacon to 4.5 m.
+  - `capture_pylon`: a capture point's pylon, origin on the floor at its axis, (-0.85, 0, -0.85)
+    ..(0.85, 4.0, 0.85): a hexagonal mast (apothem 0.39 m at the foot, flats on +-Z) on a plinth,
+    team lines up its faces, a team crown ring at 3.75 m and a white beacon on top.
   - `mobile_silo_fill`: its fill column, octagonal `accent` prism of apothem 1.36 m from
     y = 0 to 1; the game puts it at y = 1.4 (the window's bottom) and scales it in Y by
     1.9 m (the window's height) x the fill fraction.
@@ -92,6 +95,7 @@ import pslib as P  # noqa: E402
 from pslib import LIGHT, HALO, X, Y, Z, NX, NY, NZ  # noqa: E402
 
 LIMIT = 2000
+PYLON_R = 0.45  # ps_sim::base::PYLON_R
 
 
 # ---------------------------------------------------------------------------------------------
@@ -561,6 +565,31 @@ def generator_core():
         j = (i + 1) % n
         g.face([lo[i], lo[j], (0, y0, 0)], LIGHT, want=NY)
         g.face([hi[i], hi[j], (0, y1, 0)], LIGHT, want=Y)
+    return g
+
+
+def capture_pylon():
+    """A capture point's pylon: a hexagonal mast tapering up from a plinth, team lines up its
+    faces, a team crown ring and a white beacon on top."""
+    g = L.Geo()
+    R = PYLON_R
+    P.lathe(g, (0, 0, 0), Y, [(0, R + 0.25), (0.25, R + 0.2), (0.35, R)], n=6, phase=0.0,
+            cap0=None)
+    P.lathe(g, (0, 0, 0), Y, [(0.35, R), (3.5, R * 0.6), (3.7, R * 0.8), (3.9, R * 0.5)],
+            n=6, phase=0.0, cap0=None)
+    # (The mast's corner radius at height y; a face's middle is at that times the edge's
+    # middle on the unit hexagon.)
+    rad = lambda y: R * (1.0 - 0.4 * (y - 0.35) / 3.15)
+    hexa = P.circle((0, 0, 0), Y, 1.0, 6, phase=0.0)
+    for k in range(6):
+        a, b = hexa[k], hexa[(k + 1) % 6]
+        m = ((a[0] + b[0]) / 2, (a[2] + b[2]) / 2)
+        out = (m[0], 0.0, m[1])
+        P.accent(g, [(m[0] * rad(y), y, m[1] * rad(y)) for y in (0.5, 3.3)], out, 0.05,
+                 glow=0.05)
+    holo_ring(g, 3.75, 0.62, 0.07, tilt=0.0)
+    P.disc(g, P.circle((0, 3.9 + L.ACCENT_H, 0), Y, R * 0.42, 6, phase=0.0), Y, mat=LIGHT,
+           glow=0.04)
     return g
 
 
@@ -1292,7 +1321,8 @@ def main():
              ("bastion_head", bastion_head()),
              ("forward_tube", forward_tube()),
              ("mobile_silo", mobile_silo()),
-             ("mobile_silo_fill", mobile_silo_fill())]
+             ("mobile_silo_fill", mobile_silo_fill()),
+             ("capture_pylon", capture_pylon())]
     asymmetric = ("terminal_equipment", "resource_node")  # (the gun motif; the crystals)
     smooth = {"generator_core": 50, "resource_silo_fill": 30}
     for name, g in props:

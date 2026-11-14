@@ -521,6 +521,27 @@ fn build(
                                         }),
                                     ));
                                 }
+                                // Its capture points (here: who holds each), in a row
+                                // under it.
+                                let points = (Some(shown) == game.continent)
+                                    .then(|| game.snap.bases.get(bi).and_then(|s| s.points))
+                                    .flatten();
+                                if let Some(ps) = points {
+                                    for (k, pt) in ps.iter().enumerate() {
+                                        m.spawn((
+                                            Node {
+                                                position_type: PositionType::Absolute,
+                                                left: Val::Px(p.x - 10.0 + k as f32 * 8.0 - 3.0),
+                                                top: Val::Px(p.y + size / 2.0 + 3.0),
+                                                width: Val::Px(6.0),
+                                                height: Val::Px(6.0),
+                                                border_radius: BorderRadius::all(Val::Px(3.0)),
+                                                ..default()
+                                            },
+                                            BackgroundColor(color_of(pt.owner)),
+                                        ));
+                                    }
+                                }
                                 let mut name = b.name.clone();
                                 if let Some(f) = cd.facility(bi as BaseIdx) {
                                     name = format!("{name} ({})", f.name());

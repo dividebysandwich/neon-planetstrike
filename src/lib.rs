@@ -62,6 +62,7 @@ pub mod web;
 pub mod wheel;
 #[cfg(windows)]
 mod win_console;
+pub mod worldbar;
 #[cfg(feature = "xr")]
 pub mod xr;
 
@@ -418,6 +419,7 @@ pub fn run() {
         terrain::TerrainPlugin,
         flora::FloraPlugin,
         bases::BasesPlugin,
+        worldbar::WorldBarPlugin,
         actors::ActorsPlugin,
         vehicles::VehiclesPlugin,
         // (What the use key or trigger does: VR's panels show its choices too.)

@@ -996,17 +996,39 @@ fn update(
                                 String::new()
                             }
                         });
+                        let points = game.snap.bases.get(b as usize).and_then(|s| s.points);
                         let hack = st.hack.map_or(String::new(), |h| {
                             format!(
-                                "   HACKED BY {}  {}:{:02}",
+                                "   {} BY {}  {}:{:02}",
+                                if points.is_some() {
+                                    "CAPTURED"
+                                } else {
+                                    "HACKED"
+                                },
                                 h.team.upper(),
                                 (h.left / 60.0) as u32,
                                 h.left as u32 % 60
                             )
                         });
+                        // Who holds each capture point (a + while it's being taken).
+                        let held = points.map_or(String::new(), |ps| {
+                            let mut s = String::from("  ");
+                            for (i, p) in ps.iter().enumerate() {
+                                let who = p
+                                    .owner
+                                    .map_or('-', |t| t.upper().chars().next().unwrap_or('?'));
+                                let busy = if p.contested || p.by.is_some() {
+                                    "+"
+                                } else {
+                                    ""
+                                };
+                                s += &format!(" {}:{who}{busy}", ps_sim::base::POINT_NAMES[i]);
+                            }
+                            s
+                        });
                         format!(
-                            "{} ({}){}{}",
-                            m.def.bases[b as usize].name, owner, hack, power
+                            "{} ({}){}{}{}",
+                            m.def.bases[b as usize].name, owner, held, hack, power
                         )
                     }
                     _ => String::new(),
