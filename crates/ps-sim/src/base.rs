@@ -22,7 +22,7 @@ use glam::{Vec2, Vec3};
 
 use crate::collide::{Collider, round_prism};
 use crate::noise::Seq;
-use crate::worldgen::{BaseKind, BaseSite};
+use crate::worldgen::{BaseKind, BaseSite, Capture};
 
 /// What a structure box is drawn as.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,6 +92,26 @@ pub struct Lamp {
     pub aim: Option<Vec3>,
 }
 
+/// A capture point (`Capture::Points` bases): a zone round its pylon held by standing in it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CapturePoint {
+    /// The zone's middle (on the floor) and its radius.
+    pub pos: Vec3,
+    pub radius: f32,
+    /// The pylon's foot (it marks the point; it's solid).
+    pub pylon: Vec3,
+    /// A clear spot in the zone to stand on, and the way to it for bots from outside the
+    /// front gateway.
+    pub stand: Vec3,
+    pub path: Vec<Vec3>,
+}
+
+/// The points' letters.
+pub const POINT_NAMES: [char; 3] = ['A', 'B', 'C'];
+/// A pylon's radius and height.
+pub const PYLON_R: f32 = 0.45;
+pub const PYLON_H: f32 = 4.2;
+
 #[derive(Clone, Debug)]
 pub struct BaseLayout {
     pub kind: BaseKind,
@@ -134,6 +154,8 @@ pub struct BaseLayout {
     /// the spawn room out through the front gateway.
     pub to_console: Vec<Vec3>,
     pub from_spawn: Vec<Vec3>,
+    /// Capture points A, B, C (none where the console is hacked).
+    pub points: Vec<CapturePoint>,
 }
 
 pub const WALL_T: f32 = 4.0;
@@ -759,6 +781,7 @@ pub fn layout(site: &BaseSite, y: f32, seed: u32) -> BaseLayout {
             storeys: 1,
             to_console: Vec::new(),
             from_spawn: Vec::new(),
+            points: Vec::new(),
         },
     };
     let mut rng = Seq::new(seed as u64, 0xba5e);
@@ -772,7 +795,13 @@ pub fn layout(site: &BaseSite, y: f32, seed: u32) -> BaseLayout {
     };
     b.out.storeys = storeys;
     compound(&mut b, half, site.kind);
-    building(&mut b, storeys, site.kind != BaseKind::Home, &mut rng);
+    let points = site.kind == BaseKind::Outpost && site.capture == Capture::Points;
+    building(
+        &mut b,
+        storeys,
+        site.kind != BaseKind::Home && !points,
+        &mut rng,
+    );
     // Paths (base frame): the front gateway, the building's front door, the hall, the doors.
     let c = BLD_C;
     let (z0, z1) = (c.y - BLD_HALF.y, c.y + BLD_HALF.y);
@@ -782,7 +811,8 @@ pub fn layout(site: &BaseSite, y: f32, seed: u32) -> BaseLayout {
     let gate_in = (0.0, -inner + 5.0);
     let door_out = (0.0, z0 - 3.0);
     let door_in = (0.0, z0 + 2.5);
-    let hall = (x1 - 16.0, z1 - 15.0);
+    // (Between the hall's pillar and the core room's wall.)
+    let hall = (x1 - 16.0, z1 - 13.5);
     let core_door = (x1 - 7.0, z1 - 12.0 - 1.5);
     let core_in = (x1 - 7.0, z1 - 12.0 + 2.0);
     let console_front = (x1 - 7.0, z1 - 5.0 - 1.6);
@@ -812,6 +842,46 @@ pub fn layout(site: &BaseSite, y: f32, seed: u32) -> BaseLayout {
         ],
         0.0,
     );
+    if points {
+        // A in the front yard on the way in, B in the core room (where the console would
+        // be), C in the back left of the yard; each a pylon.
+        let gate = [gate_out, gate_in];
+        let spots = [
+            ((0.0, -30.0), 8.0, (4.0, -30.0), (-2.5, -32.0), vec![]),
+            (
+                (x1 - 7.0, z1 - 7.0),
+                5.0,
+                (x1 - 7.0, z1 - 4.0),
+                console_front,
+                vec![door_out, door_in, hall, core_door, core_in],
+            ),
+            (
+                (-38.0, 36.0),
+                8.0,
+                (-38.0, 36.0),
+                (-35.5, 33.5),
+                vec![(-30.0, -12.0), (-30.0, 24.0)],
+            ),
+        ];
+        for (at, radius, pylon, stand, via) in spots {
+            let mut path: Vec<(f32, f32)> = gate.to_vec();
+            path.extend(via);
+            path.push(stand);
+            let pylon = b.p(pylon.0, 0.0, pylon.1);
+            b.out
+                .colliders
+                .push(round_prism(pylon, PYLON_R, PYLON_H, 6, 0.0));
+            b.out.styles.push(Style::Pillar);
+            let point = CapturePoint {
+                pos: b.p(at.0, 0.0, at.1),
+                radius,
+                pylon,
+                stand: b.p(stand.0, 0.0, stand.1),
+                path: b.pts(&path, 0.0),
+            };
+            b.out.points.push(point);
+        }
+    }
     // The yard: vehicle pads with their terminals, rearm pads, the silo.
     type Spots = &'static [(f32, f32)];
     let (pads, rearm, silo): (Spots, Spots, (f32, f32)) = match site.kind {
@@ -1364,7 +1434,8 @@ fn building(b: &mut Builder, storeys: u8, console: bool, rng: &mut Seq) {
         let (x, z) = match rng.int(0, 3) {
             0 => (rng.range(x0 + 6.0, cx - 2.0), z0 + 1.2),
             1 => (rng.range(sx + 2.0, cx - 2.0), z1 - 1.2),
-            _ => (gx - 1.5, rng.range(gz + 1.5, cz - 1.5)),
+            // (Clear of the way along to the core room's door.)
+            _ => (gx - 1.5, rng.range(gz + 1.5, gz + 2.5)),
         };
         let s = rng.range(1.0, 1.8);
         b.decor(x, 0.0, z, Vec3::splat(s));
@@ -1726,6 +1797,7 @@ mod tests {
                     kind,
                     pos: Vec2::new(100.0, -50.0),
                     facing,
+                    capture: Capture::Console,
                 };
                 let l = layout(&site, 10.0, seed);
                 assert_eq!(l.colliders.len(), l.styles.len());
@@ -1768,6 +1840,62 @@ mod tests {
     }
 
     #[test]
+    fn capture_points_are_clear_and_bots_reach_them() {
+        for facing in [0.0, 1.6, -1.5, 3.1] {
+            for seed in 0..3 {
+                let site = BaseSite {
+                    name: "t".into(),
+                    kind: BaseKind::Outpost,
+                    pos: Vec2::new(100.0, -50.0),
+                    facing,
+                    capture: Capture::Points,
+                };
+                let l = layout(&site, 0.0, seed);
+                assert!(l.console.is_none());
+                assert_eq!(l.points.len(), 3);
+                let mut cs = l.colliders.clone();
+                cs.push(Collider::Box {
+                    min: Vec3::new(-500.0, -1.0, -500.0),
+                    max: Vec3::new(500.0, 0.0, 500.0),
+                });
+                let w = World::new(cs, None);
+                for (i, pt) in l.points.iter().enumerate() {
+                    // The stand spot is clear, on the floor, in the zone.
+                    let mut p = pt.stand;
+                    assert!(
+                        !w.colliders
+                            .iter()
+                            .any(|c| crate::collide::push_out(c, &mut p)),
+                        "point {i} at {facing}: stand {} blocked",
+                        pt.stand
+                    );
+                    assert!(pt.stand.with_y(0.0).distance(pt.pos.with_y(0.0)) < pt.radius * 0.6);
+                    assert!(pt.pylon.with_y(0.0).distance(pt.pos.with_y(0.0)) < pt.radius);
+                    // Walking the path gets there.
+                    let mut feet = pt.path[0];
+                    let mut vy = 0.0;
+                    for &target in &pt.path[1..] {
+                        for _ in 0..2400 {
+                            let d = Vec2::new(target.x - feet.x, target.z - feet.z);
+                            if d.length() < 0.4 {
+                                break;
+                            }
+                            let step = d.normalize() * (5.0f32 / 60.0).min(d.length());
+                            (feet, vy) = w.move_body(feet, step, vy, 1.0 / 60.0);
+                        }
+                        assert!(
+                            Vec2::new(target.x - feet.x, target.z - feet.z).length() < 0.6,
+                            "point {i} at {facing}: stuck at {feet} on the way to {target}"
+                        );
+                    }
+                    // The zones are apart, and B is inside.
+                    assert_eq!(l.in_building(pt.pos), i == 1, "point {i}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn gateways_are_where_the_forcefields_are() {
         for q in 0..4 {
             let site = BaseSite {
@@ -1775,6 +1903,7 @@ mod tests {
                 kind: BaseKind::Outpost,
                 pos: Vec2::new(100.0, -50.0),
                 facing: q as f32 * std::f32::consts::FRAC_PI_2,
+                capture: Capture::Console,
             };
             let l = layout(&site, 0.0, 1);
             let gw = gateways(&site);
@@ -1804,6 +1933,7 @@ mod tests {
                 kind,
                 pos: Vec2::ZERO,
                 facing: 0.0,
+                capture: Capture::Console,
             };
             let l = layout(&site, 0.0, 1);
             let mut cs = l.colliders.clone();

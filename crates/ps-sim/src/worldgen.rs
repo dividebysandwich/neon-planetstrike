@@ -108,6 +108,17 @@ impl ContinentDef {
     }
 }
 
+/// How a base is taken.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Capture {
+    /// Solving the console in its core room (a hack that runs out, at a tower at once).
+    #[default]
+    Console,
+    /// Three capture points (A, B, C): a faction holding two of them takes it when its
+    /// capture runs out (`crate::capture`).
+    Points,
+}
+
 #[derive(Clone, Debug)]
 pub struct BaseSite {
     pub name: String,
@@ -115,6 +126,7 @@ pub struct BaseSite {
     pub pos: Vec2,
     /// Which way the main building's front faces (radians about +Y, 0 = facing -Z).
     pub facing: f32,
+    pub capture: Capture,
 }
 
 impl BaseSite {
@@ -535,6 +547,7 @@ impl WorldDef {
                     kind: BaseKind::Home,
                     pos: Vec2::ZERO,
                     facing: 0.0,
+                    capture: Capture::Console,
                 });
                 def.lattice = (0..gates.len())
                     .map(|g| (Node::Base(0), Node::Gate(g as u8)))
@@ -587,6 +600,7 @@ impl WorldDef {
                     },
                     pos: p,
                     facing,
+                    capture: Capture::Console,
                 });
             }
             // The lattice between the bases, never straight from a gate to the center.
@@ -655,8 +669,12 @@ impl WorldDef {
                     kind: BaseKind::Tower,
                     pos: p,
                     facing,
+                    capture: Capture::Console,
                 });
             }
+        }
+        for c in &mut continents {
+            assign_capture(c, params.seed);
         }
         WorldDef { params, continents }
     }
@@ -674,6 +692,21 @@ impl WorldDef {
     /// Continents linked to `c` by a warp gate.
     pub fn neighbours(&self, c: ContinentId) -> impl Iterator<Item = ContinentId> + '_ {
         self.continents[c as usize].gates.iter().map(|g| g.to)
+    }
+}
+
+/// A third of a contested continent's outposts (rounded up) are taken at capture points;
+/// which ones follows from a hash, not the continent's random stream (that would move
+/// everything drawn after it).
+fn assign_capture(def: &mut ContinentDef, seed: u64) {
+    let mut outposts: Vec<usize> = (0..def.bases.len())
+        .filter(|&b| def.bases[b].kind == BaseKind::Outpost)
+        .collect();
+    let key = (seed as u32) ^ ((seed >> 32) as u32) ^ 0xca97;
+    outposts.sort_by_key(|&b| crate::noise::hash2(def.id as i32, b as i32, key));
+    let n = outposts.len().div_ceil(3);
+    for &b in &outposts[..n] {
+        def.bases[b].capture = Capture::Points;
     }
 }
 
@@ -729,6 +762,20 @@ mod tests {
                         assert!((2..=4).contains(&g), "seed {seed}: {} gates", g);
                         assert!(c.bases.len() >= 5, "seed {seed}: {} bases", c.bases.len());
                         assert_eq!(c.bases[0].kind, BaseKind::Center);
+                        // A third of the outposts (rounded up) at capture points; nothing
+                        // else.
+                        let outposts = c
+                            .bases
+                            .iter()
+                            .filter(|b| b.kind == BaseKind::Outpost)
+                            .count();
+                        let points: Vec<&BaseSite> = c
+                            .bases
+                            .iter()
+                            .filter(|b| b.capture == Capture::Points)
+                            .collect();
+                        assert_eq!(points.len(), outposts.div_ceil(3));
+                        assert!(points.iter().all(|b| b.kind == BaseKind::Outpost));
                         // Every gate reaches the center through the lattice, never directly.
                         for gi in 0..g {
                             assert!(
