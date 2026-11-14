@@ -326,7 +326,100 @@ fn push_prism(m: &mut MeshData, c: &Collider) {
 /// A base's structure: bodies by kind (walls, floors, furniture), the windows' glass, and trims
 /// along the tops of walls and buildings, round the furniture, on the stairs' nosings and
 /// wherever the architecture's details put them.
-fn structure(layout: &BaseLayout) -> ([MeshData; 3], MeshData, MeshData) {
+/// The canyon caves' alien dress on a wall or a building's side (`min`..`max`): tapered ribs up
+/// both long faces every `every` metres with a vein of team light up each, and (the compound's
+/// walls) a spire at each end of the run.
+fn alien_ribs(
+    body: &mut MeshData,
+    trim: &mut MeshData,
+    min: Vec3,
+    max: Vec3,
+    every: f32,
+    spires: bool,
+) {
+    let along_x = max.x - min.x >= max.z - min.z;
+    // (Local: u along the run, v out of the faces.)
+    let (u0, u1) = if along_x {
+        (min.x, max.x)
+    } else {
+        (min.z, max.z)
+    };
+    let (v0, v1) = if along_x {
+        (min.z, max.z)
+    } else {
+        (min.x, max.x)
+    };
+    let at = |u: f32, y: f32, v: f32| {
+        if along_x {
+            Vec3::new(u, y, v)
+        } else {
+            Vec3::new(v, y, u)
+        }
+    };
+    let (y0, y1) = (min.y.max(max.y - 14.0), max.y - 0.4);
+    if y1 - y0 < 2.0 {
+        return;
+    }
+    let n = ((u1 - u0) / every).floor() as i32;
+    let start = u0 + (u1 - u0 - (n - 1).max(0) as f32 * every) / 2.0;
+    for k in 0..n {
+        let u = start + k as f32 * every;
+        for (face, out) in [(v0, -1.0f32), (v1, 1.0f32)] {
+            // A section round the rib at the foot and at the top, out from the face.
+            let sec = |y: f32, w: f32, o0: f32, o1: f32| -> [Vec3; 4] {
+                [
+                    at(u - w, y, face + out * o0),
+                    at(u + w, y, face + out * o0),
+                    at(u + w, y, face + out * o1),
+                    at(u - w, y, face + out * o1),
+                ]
+            };
+            let (a, b) = (sec(y0, 0.32, -0.02, 0.3), sec(y1, 0.14, -0.02, 0.1));
+            push_detail(body, &[a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3]]);
+            let (a, b) = (
+                sec(y0 + 0.8, 0.04, 0.27, 0.32),
+                sec(y1 - 0.3, 0.03, 0.09, 0.13),
+            );
+            push_detail(trim, &[a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3]]);
+        }
+    }
+    if spires && u1 - u0 > 6.0 {
+        let vm = (v0 + v1) / 2.0;
+        for u in [u0 + 1.0, u1 - 1.0] {
+            let r = 0.7;
+            let foot = [
+                at(u - r, max.y, vm - r),
+                at(u + r, max.y, vm - r),
+                at(u + r, max.y, vm + r),
+                at(u - r, max.y, vm + r),
+            ];
+            let tip = at(u, max.y + 2.6, vm);
+            let t = 0.03;
+            let top = [
+                tip + Vec3::new(-t, 0.0, -t),
+                tip + Vec3::new(t, 0.0, -t),
+                tip + Vec3::new(t, 0.0, t),
+                tip + Vec3::new(-t, 0.0, t),
+            ];
+            push_detail(
+                body,
+                &[
+                    foot[0], foot[1], foot[2], foot[3], top[0], top[1], top[2], top[3],
+                ],
+            );
+            let glow: [Vec3; 4] = std::array::from_fn(|i| tip + (foot[i] - tip) * 0.27);
+            let tip2: [Vec3; 4] = std::array::from_fn(|i| top[i] + Vec3::Y * 0.02);
+            push_detail(
+                trim,
+                &[
+                    glow[0], glow[1], glow[2], glow[3], tip2[0], tip2[1], tip2[2], tip2[3],
+                ],
+            );
+        }
+    }
+}
+
+fn structure(layout: &BaseLayout, alien: bool) -> ([MeshData; 3], MeshData, MeshData) {
     let mut body: [MeshData; 3] = Default::default();
     let mut glass = MeshData::default();
     let mut trim = MeshData::default();
@@ -354,7 +447,12 @@ fn structure(layout: &BaseLayout) -> ([MeshData; 3], MeshData, MeshData) {
                         Vec3::new(min.x - e, max.y - b, min.z - e),
                         Vec3::new(max.x + e, max.y - b * 0.4, max.z + e),
                     );
-                    if matches!(style, Style::Wall) {
+                    if alien && matches!(style, Style::Wall | Style::Building) {
+                        // Ribs and veins up the wall (instead of bands).
+                        let wall = matches!(style, Style::Wall);
+                        let every = if wall { 3.5 } else { 4.0 };
+                        alien_ribs(&mut body[0], &mut trim, min, max, every, wall);
+                    } else if matches!(style, Style::Wall) {
                         // Bands up the wall.
                         for h in [3.0, 7.0] {
                             if min.y + h < max.y - 1.0 {
@@ -518,9 +616,20 @@ fn build(
     let Some(map) = game.map.clone() else { return };
     shown.0.clear();
     let c = map.def.id;
+    // (In the canyon caves: the alien equipment, alien.glb's, where there's one.)
+    let alien = map.def.theme.caves();
+    let named = |name: &str| -> String {
+        let a = format!("alien_{name}");
+        if alien && models.has(&a) {
+            a
+        } else {
+            name.to_string()
+        }
+    };
     let get = |name: &str, size: Vec3, meshes: &mut Assets<Mesh>| -> Model {
-        if models.has(name) {
-            models.get(name)
+        let name = named(name);
+        if models.has(&name) {
+            models.get(&name)
         } else {
             stand_in(meshes, size)
         }
@@ -550,7 +659,7 @@ fn build(
         let root = commands
             .spawn((BasePart, Transform::IDENTITY, Visibility::default()))
             .id();
-        let (body, glass, trim) = structure(layout);
+        let (body, glass, trim) = structure(layout, alien);
         for (k, m) in body.iter().enumerate() {
             if m.is_empty() {
                 continue;
@@ -679,8 +788,8 @@ fn build(
             let m = get("rearm_pad", Vec3::new(16.0, 0.05, 16.0), &mut meshes);
             prop(&mut commands, &m, at + Vec3::Y * 0.02, 0.0);
         }
-        if models.has("spawn_tube") {
-            let m = models.get("spawn_tube");
+        if models.has(&named("spawn_tube")) {
+            let m = models.get(&named("spawn_tube"));
             for &(at, yaw) in &layout.spawns {
                 prop(&mut commands, &m, at, yaw);
             }
@@ -689,8 +798,8 @@ fn build(
             let m = get("generator", Vec3::new(4.0, 3.5, 4.0), &mut meshes);
             let yaw = layout.quarter as f32 * std::f32::consts::FRAC_PI_2;
             prop(&mut commands, &m, g, yaw);
-            if models.has("generator_core") {
-                let core = models.get("generator_core");
+            if models.has(&named("generator_core")) {
+                let core = models.get(&named("generator_core"));
                 let e = commands
                     .spawn((
                         GeneratorCore(b),
@@ -718,8 +827,8 @@ fn build(
         if let Some(sp) = layout.silo {
             let m = get("resource_silo", Vec3::new(8.0, 12.0, 8.0), &mut meshes);
             prop(&mut commands, &m, sp, 0.0);
-            let fill = if models.has("resource_silo_fill") {
-                models.get("resource_silo_fill")
+            let fill = if models.has(&named("resource_silo_fill")) {
+                models.get(&named("resource_silo_fill"))
             } else {
                 Model {
                     parts: vec![(

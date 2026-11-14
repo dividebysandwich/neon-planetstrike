@@ -267,7 +267,7 @@ pub struct Models {
     /// The shotgun in a player's hand (in the blaster's frame), and its muzzle.
     pub shotgun: Model,
     pub shotgun_muzzle: Vec3,
-    /// Every mesh of vehicles.glb, props.glb, warpgate.glb and weapons.glb by name, and their
+    /// Every mesh of vehicles.glb, props.glb, alien.glb, warpgate.glb and weapons.glb by name, and their
     /// named nodes (muzzles).
     pub named: HashMap<String, Model>,
     pub nodes: HashMap<String, Vec3>,
@@ -515,7 +515,7 @@ pub fn load_models(meshes: &mut Assets<Mesh>) -> Models {
         models.shotgun = models.blaster.clone();
         models.shotgun_muzzle = models.muzzle;
     }
-    for file in ["vehicles", "props", "warpgate", "weapons"] {
+    for file in ["vehicles", "props", "alien", "warpgate", "weapons"] {
         match load_glb(&format!("models/{file}.glb")) {
             Ok(f) => {
                 for name in f.meshes.keys() {

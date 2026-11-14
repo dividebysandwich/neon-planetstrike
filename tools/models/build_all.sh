@@ -7,7 +7,7 @@
 set -e
 cd "$(dirname "$0")/../.."
 BLENDER=${BLENDER:-blender}
-for f in ${@:-kit structures blaster grenade avatars reload powerups vehicles props warpgate weapons}; do
+for f in ${@:-kit structures blaster grenade avatars reload powerups vehicles props alien warpgate weapons}; do
     log=$("$BLENDER" -b --factory-startup --python-exit-code 1 --python "tools/models/$f.py" 2>&1) || {
         echo "$log"
         echo "$f: FAILED"
