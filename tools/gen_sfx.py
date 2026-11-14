@@ -75,25 +75,27 @@ circular filters/noise, so they repeat seamlessly):
 - engine_bus (2 s loop): wheeled: a 90 Hz motor hum, an electric whine, soft tyre roar.
 - engine_vtol (2 s loop): a fan/jet whoosh pulsing at 14 Hz (rotor), a turbine whine, a throb.
 - tracks (1.5 s loop): track links clattering over the sprockets over a grinding rattle.
-- cannon_light / cannon_heavy: a tank cannon: crack, blast, sub thump and rumble (the heavy
-  one deeper, longer, with a rolling echo).
-- flak_fire (0.12 s) / chaingun (0.08 s): one short punchy shot of the AA gun / machine gun.
-- airburst: a flak shell bursting mid-air: a crack, a puff and a crackling fragment spray.
-- rocket_fire / striker_fire: a rocket launch: ignition, a roaring whoosh tearing away.
-- missile_fire: a homing missile's launch: a sharp ejection click, a hissing motor screaming
-  away with a rising whistle.
-- air_cannon: the interceptor's nose cannon: a short, bright, punchy pop.
 - lock_tone: a lock-on held: two short high beeps (repeated by the game while it locks).
 - lock_warning: being locked on: a fast urgent two-tone warble.
 - flares: an aircraft's flares: a volley of popping charges and a fizzing hiss.
-- rifle_fire (0.12 s) / pistol_fire: energy shots: fast FM zaps over a punch.
-- lance_crack: the sniper: a sharp supersonic crack, a searing zap and a long rolling tail.
-- medgun_loop (2 s loop): a soft pulsing fifth with an airy shimmer and bell sparkles.
-- reload_long: cell ejected, a charging servo, the new cell clacked home, locks and a chirp.
-- explosion_small / explosion_large: blasts; the large one (vehicle destroyed) with a sub drop,
-  debris, metal clanks and a long rolling rumble.
-- impact_armor / impact_ground / bullet_whiz: a clang on armour, a thud in the dirt, a near miss.
-- turret_wall_fire: a base defence turret's heavy zap and knock.
+- Weapons (the "weapons (layered)" section: every shot a crack, a body, a sub and its mechanism,
+  saturated, transient-shaped and set in a room; one sound per weapon):
+  - rifle_fire, ember_fire (Red: low, slow, boomy), volt_fire (Blue: a tight electric snap),
+    hive_fire (Green: thin, fast, chittering), scatter_fire (a blast, then the pump),
+    lance_crack (a supersonic crack and a long tail), striker_fire, skyhook_fire, pistol_fire.
+  - medgun_loop, repair_loop (2 s loops): the heal beam's warm pulsing hum, the repair beam's arc.
+  - pounder_fire, mauler_fire, burster_fire: a MAX's twin chainguns, cannons and flak tubes.
+  - cannon_light, cannon_heavy, rail_fire, autocannon_fire, flak_fire, rocket_fire,
+    missile_fire, air_cannon, chaingun, turret_wall_fire, spitfire_fire: vehicles and turrets.
+  - tail_small / tail_medium / tail_heavy: a shot heard from far off (dull, soft, rolling),
+    played instead of its own sound beyond its range.
+- Impacts: impact_body_1..2, impact_shield, impact_armor_1..2 (a vehicle), impact_ground_1..3,
+  impact_metal_1..2 (walls and decks), ricochet_1..3.
+- Explosions: explosion_small / _medium / _large (by the blast's size), explosion_wreck (a
+  vehicle: a cook-off and plates raining down), airburst (flak, in the open air).
+- bullet_whiz_1..3, whiz_heavy: near misses (a bolt's whistle, a shell's tearing whoosh).
+- reload_rifle / _scatter / _lance / _launcher / _pistol / _heavy, reload_done; casing_1..2,
+  casing_shell: the guns' mechanisms.
 - vehicle_spawn: a vehicle materialising: a rising sweep and ring cloud, a thump and chord.
 - rearm_loop (2 s loop): a charging hum, a geared servo whine, ratchet ticks, an electric fizz.
 - deploy / undeploy: the bus's hydraulic legs and its spawn systems powering up / down.
@@ -107,8 +109,9 @@ circular filters/noise, so they repeat seamlessly):
   and a big fanfare). alert: a two-pulse klaxon.
 - heal, fall_thud, hurt, death, spawn, hitmarker, kill_confirm: player feedback.
 
-Each sound is scaled to an RMS loudness (dBFS) suited to the mix, peaks softly limited under
-full scale. Mono, 44.1 kHz, Ogg Vorbis.
+Each sound is scaled to a loudness (dBFS) suited to the mix: its whole RMS, or (the weapons,
+marked "peak" in `SOUNDS`) the RMS of its loudest 100 ms, so that a long tail takes nothing from
+the crack; peaks softly limited under full scale. Mono, 44.1 kHz, Ogg Vorbis.
 
     python3 tools/gen_sfx.py [name ...]      (needs numpy and ffmpeg with libvorbis)
 
@@ -308,6 +311,11 @@ def sub(t, hz, decay, drop=0.3, attack=0.004):
     return np.sin(2 * np.pi * phase(f)) * env(t, attack, decay)
 
 
+def delayed(x, t):
+    """`x` starting `t` s later (as long as it was: its end is cut)."""
+    return np.concatenate([np.zeros(int(t * RATE)), x])[:len(x)]
+
+
 def _comb(x, delay, gain, damp):
     """A feedback comb filter (`delay` samples, `damp`: how much duller each time round)."""
     y = x.copy()
@@ -336,13 +344,13 @@ def reverb(x, size=1.0, decay=0.6, damp=0.35, mix=0.2, predelay=0.012):
         wet += _comb(x, n, 10 ** (-3.0 * n / RATE / decay), damp)
     for d in (0.005, 0.0017):
         wet = _allpass(wet, max(int(d * size * RATE), 4), 0.6)
-    wet = highpass(at(len(x) / RATE, predelay, wet), 120)[:len(x)]
+    wet = highpass(delayed(wet, predelay), 120)
     return x + mix * wet * (np.sqrt(np.mean(x * x)) / (np.sqrt(np.mean(wet * wet)) + 1e-12))
 
 
 def slapback(x, delay, gain, hi=2500):
     """One hard echo off a wall `delay` s later, `gain` as loud, dulled above `hi` Hz."""
-    return x + gain * at(len(x) / RATE, delay, lowpass(x, hi))
+    return x + gain * delayed(lowpass(x, hi), delay)
 
 
 def mech(T, kind):
@@ -396,12 +404,13 @@ def window_rms(x, win=0.1):
     return np.sqrt(np.max(c[n:] - c[:-n]) / n)
 
 
-CEILING = 10 ** (-1.0 / 20)
+CEILING = 10 ** (-2.0 / 20)
 KNEE = 0.6
 
 
 def soft_limit(x):
-    """Peaks over `KNEE` bent over towards `CEILING` (-1 dBFS); under it nothing is changed."""
+    """Peaks over `KNEE` bent over towards `CEILING` (-2 dBFS: the encoder overshoots a
+    little); under it nothing is changed."""
     a = np.abs(x)
     over = KNEE + (CEILING - KNEE) * np.tanh((a - KNEE) / (CEILING - KNEE))
     return np.sign(x) * np.where(a > KNEE, over, a)
@@ -410,7 +419,7 @@ def soft_limit(x):
 def write(name, x, level_db, loop=False, mode="rms"):
     """Writes `x`, as loud as `level_db` dBFS. `mode` "rms": the whole sound's RMS, the peaks
     softly limited under full scale (loops, tones, the older sounds). "peak": the RMS of its
-    loudest 100 ms, with a soft-knee limiter at -1 dBFS (one-shots: a long tail doesn't push
+    loudest 100 ms, with a soft-knee limiter at -2 dBFS (one-shots: a long tail doesn't push
     the crack into the limiter then). (`loop`: played round and round, so no fades at the
     ends.)"""
     x = x - np.mean(x) if loop else fades(x - np.mean(x))
@@ -654,18 +663,6 @@ def reload():
     tick = np.convolve(tick, np.ones(66) / 66, "same")
     zap = highpass(noise(T, 3000, 9000), 2500) * tick * 0.25
     return fades(hum * 0.7 + zap, 0.02, 0.08)
-
-
-def reload_done():
-    T = 0.4
-    out = np.zeros(int(T * RATE))
-    for i, hz in enumerate([1318.5, 1975.5]):
-        d = T - 0.09 * i
-        x = seconds(d)
-        p = phase(np.full(len(x), hz))
-        tone = (np.sin(2 * np.pi * p) + 0.3 * np.sin(4 * np.pi * p)) * env(d, 0.003, 0.09)
-        out += at(T, 0.09 * i, tone)
-    return echoes(out, [0.07], [0.25], 5000)
 
 
 def pickup():
@@ -962,7 +959,6 @@ def barrier_down():
     return fizz + hiss
 
 
-
 def slide_swish(T, length):
     """A piece's swish along its slot: band noise with a rattle, `length` s long."""
     x = seconds(T)
@@ -1200,89 +1196,7 @@ def tracks():
     return out * 0.6 + grind + rumble
 
 
-# ---------------------------------------------------------------- planetstrike: vehicle weapons
-
-def boom_body(T, hz, decay, rumble_decay, gain=1.0):
-    """An explosion's low end: a falling sub thump and a dull rumble."""
-    return (thump(T, hz, decay, drop=0.5) * 1.3
-            + lowpass(noise(T, 20, 400), 180) * env(T, 0.003, rumble_decay) * 0.7) * gain
-
-
-def cannon_light():
-    T = 0.9
-    crack = click(T, 1500, 13000, 0.004) * 1.4
-    blast = lowpass(noise(T, 150, 6000), 4000) * env(T, 0.0008, 0.035) * 0.9
-    body = boom_body(T, 80, 0.09, 0.22)
-    clank = ring(T, [880, 1530, 2470], [0.06, 0.04, 0.025], [0.4, 0.3, 0.2]) * 0.18
-    x = seconds(T)
-    zap = lowpass(saw(1600 * np.exp(-x / 0.03) + 180), 5000) * env(T, 0.0008, 0.04) * 0.3
-    return echoes(crack + blast + body + clank + zap, [0.12, 0.3], [0.3, 0.12], 2000)
-
-
-def cannon_heavy():
-    T = 1.9
-    crack = click(T, 1000, 12000, 0.007) * 1.5
-    blast = lowpass(noise(T, 60, 5000), 2500) * env(T, 0.001, 0.07) * 1.1
-    body = boom_body(T, 52, 0.25, 0.55, 1.2)
-    rumble = lowpass(noise(T, 20, 200), 90) * env(T, 0.05, 0.6, hold=0.1) * 0.5
-    clank = ring(T, [520, 910, 1480], [0.12, 0.08, 0.05], [0.4, 0.3, 0.2]) * 0.15
-    x = seconds(T)
-    zap = lowpass(saw(1100 * np.exp(-x / 0.05) + 90), 3500) * env(T, 0.001, 0.08) * 0.3
-    return echoes(crack + blast + body + rumble + clank + zap, [0.17, 0.4, 0.7], [0.35, 0.18, 0.08], 1500)
-
-
-def flak_fire():
-    T = 0.12
-    x = seconds(T)
-    # A short, hard pop: a crack, a punchy thump, a bark of noise and a tiny zap.
-    crack = click(T, 1500, 10000, 0.002) * 1.0
-    bark = noise(T, 400, 5000) * env(T, 0.0005, 0.012) * 0.7
-    punch = thump(T, 150, 0.025, drop=0.5) * 1.1
-    zap = lowpass(square(1300 * np.exp(-x / 0.012) + 300, 0.3), 5000) * env(T, 0.0005, 0.015) * 0.25
-    return crack + bark + punch + zap
-
-
-def airburst():
-    T = 0.9
-    # A mid-air flak shell bursting: a sharp crack, a puff and a crackling spray of fragments.
-    crack = click(T, 1200, 12000, 0.005) * 1.3
-    puff = lowpass(noise(T, 100, 3000), 1500) * env(T, 0.001, 0.08) * 0.8
-    spray = crackle(T, 1500, 1500, 9000) * env(T, 0.003, 0.18, hold=0.04) * 1.2
-    body = thump(T, 95, 0.07, drop=0.5) * 0.9
-    return echoes(crack + puff + spray + body, [0.14, 0.33], [0.3, 0.12], 3000)
-
-
-def rocket_fire():
-    T = 1.2
-    x = seconds(T)
-    # Ignition pop, then a hissing roar whooshing away, its tone falling as it leaves.
-    pop = thump(T, 110, 0.05, drop=0.5) * 1.0 + click(T, 600, 8000, 0.005) * 0.9
-    roar = sweep_noise(T, 9000, 1200, lo=200) * env(T, 0.01, 0.35, hold=0.1) * 0.6
-    f = 520 * np.exp(-x / 0.6) + 140
-    tone = lowpass(saw(f) * 0.5 + square(f * 1.01, 0.4) * 0.3, 2500) * env(T, 0.01, 0.3, hold=0.08) * 0.35
-    rumble = lowpass(noise(T, 25, 300), 150) * env(T, 0.005, 0.25) * 0.5
-    return echoes(pop + roar + tone + rumble, [0.1, 0.25], [0.25, 0.1], 3000)
-
-
-def missile_fire():
-    T = 1.1
-    x = seconds(T)
-    click_ = click(T, 1500, 10000, 0.003) * 1.0
-    pop = thump(T, 140, 0.03, drop=0.5) * 0.7
-    hiss = sweep_noise(T, 10000, 2500, lo=600) * env(T, 0.02, 0.4, hold=0.15) * 0.6
-    f = 900 + 900 * (1 - np.exp(-x / 0.25))
-    whistle = lowpass(saw(f) * 0.4 + np.sin(2 * np.pi * phase(f * 2)) * 0.3, 5000) * env(T, 0.03, 0.35, hold=0.1) * 0.25
-    return echoes(click_ + pop + hiss + whistle, [0.12, 0.27], [0.2, 0.08], 4000)
-
-
-def air_cannon():
-    T = 0.09
-    x = seconds(T)
-    crack = click(T, 2500, 12000, 0.0012) * 1.0
-    punch = thump(T, 170, 0.014, drop=0.5) * 0.9
-    zap = lowpass(square(1800 * np.exp(-x / 0.006) + 500, 0.3), 7000) * env(T, 0.0003, 0.01) * 0.3
-    return crack + punch + zap
-
+# ---------------------------------------------------------------- planetstrike: lock-ons
 
 def lock_tone():
     T = 0.3
@@ -1392,180 +1306,9 @@ def hack_done():
     return lowpass(out, 9000)
 
 
-def chaingun():
-    T = 0.08
-    x = seconds(T)
-    crack = click(T, 1800, 11000, 0.0015) * 1.0
-    bark = noise(T, 300, 5000) * env(T, 0.0004, 0.008) * 0.6
-    punch = thump(T, 130, 0.016, drop=0.5) * 1.0
-    zap = lowpass(square(1000 * np.exp(-x / 0.008) + 350, 0.35), 5000) * env(T, 0.0004, 0.01) * 0.25
-    return crack + bark + punch + zap
-
-
-# ---------------------------------------------------------------- planetstrike: infantry weapons
-
-def rifle_fire():
-    T = 0.12
-    x = seconds(T)
-    # An energy rifle's burst: a fast FM zap diving from 2 kHz, a punch and a crack.
-    f = 450 + (2000 - 450) * np.exp(-x / 0.02)
-    tone = np.sin(2 * np.pi * phase(f) + 1.4 * np.exp(-x / 0.03) * np.sin(2 * np.pi * phase(f * 0.5)))
-    tone = (tone + 0.3 * square(f * 0.5, 0.3)) * env(T, 0.0005, 0.03, hold=0.01)
-    crack = click(T, 2500, 11000, 0.002) * 0.5
-    punch = thump(T, 110, 0.025, drop=0.45) * 0.9
-    return lowpass(tone * 0.7, 8000) + crack + punch
-
-
-def lance_crack():
-    T = 1.3
-    x = seconds(T)
-    # A sniper's sharp supersonic crack, a searing high zap and a long rolling tail.
-    crack = click(T, 2000, 16000, 0.0015) * 2.0 + noise(T, 4000, 14000) * env(T, 0.0003, 0.01) * 0.6
-    f = 7000 * np.exp(-x / 0.04) + 700
-    zap = (np.sin(2 * np.pi * phase(f)) + 0.3 * saw(f * 0.5)) * env(T, 0.0005, 0.1, hold=0.01) * 0.45
-    punch = thump(T, 75, 0.07, drop=0.5) * 0.9
-    tail = lowpass(noise(T, 80, 3000), 1200) * env(T, 0.02, 0.4) * 0.25
-    return echoes(lowpass(crack + zap + punch + tail, 14000), [0.13, 0.31, 0.55], [0.35, 0.18, 0.08], 3500)
-
-
-def striker_fire():
-    T = 1.1
-    x = seconds(T)
-    # A shoulder rocket: a tube thunk, a sharp ignition and a whoosh tearing away.
-    thunk = thump(T, 95, 0.05, drop=0.5) * 1.1 + click(T, 300, 4000, 0.006) * 0.7
-    ignite = at(T, 0.03, click(0.1, 2000, 12000, 0.004) * 0.8)
-    whoosh = sweep_noise(T, 2500, 9000, lo=300) * np.sin(np.pi * np.clip(x / 0.35, 0, 1)) ** 2
-    whoosh += sweep_noise(T, 9000, 1500, lo=300) * np.where(x > 0.175, env(T, 0.001, 0.25), 0) * 0.8
-    f = 700 * np.exp(-x / 0.4) + 200
-    tone = lowpass(saw(f), 2500) * env(T, 0.03, 0.25, hold=0.1) * 0.2
-    return echoes(thunk + ignite + highpass(whoosh, 250) * 0.4 + tone, [0.1, 0.24], [0.25, 0.1], 3000)
-
-
-def pistol_fire():
-    T = 0.2
-    x = seconds(T)
-    # A lighter, higher pew than the rifle with a snappy click.
-    f = 650 + (2800 - 650) * np.exp(-x / 0.025)
-    tone = np.sin(2 * np.pi * phase(f) + 0.9 * np.sin(2 * np.pi * phase(f * 0.5)))
-    tone *= env(T, 0.0005, 0.04, hold=0.008)
-    crack = click(T, 3000, 12000, 0.002) * 0.45
-    punch = thump(T, 140, 0.02, drop=0.45) * 0.6
-    return echoes(tone * 0.6 + crack + punch, [0.04], [0.15], 3000)
-
-
-def reload_long():
-    T = 1.6
-    x = seconds(T)
-    # Cell ejected (click and hiss), a charging servo whine, the new cell slid home with a
-    # clack, two locking clicks and a ready chirp.
-    eject = click(0.2, 1200, 7000, 0.004) * 0.8 + ring(0.2, [1900, 3100], [0.02, 0.012], [0.4, 0.25])
-    hiss = noise(0.2, 3000, 10000) * env(0.2, 0.005, 0.05) * 0.25
-    run = 0.55
-    whine = servo(run, 260, 900, 0.3) * env(run, 0.02, 0.06, hold=run - 0.08) * 0.35
-    clack = (thump(0.25, 160, 0.03, drop=0.5) * 0.9 + click(0.25, 600, 6000, 0.005) * 0.8
-             + ring(0.25, [1400, 2350], [0.03, 0.02], [0.35, 0.25]))
-    lock = click(0.1, 2000, 9000, 0.002) * 0.7 + ring(0.1, [2600, 3900], [0.012, 0.008], [0.3, 0.2])
-    chirp = sum(at(0.25, 0.06 * i, np.sin(2 * np.pi * hz * seconds(0.25 - 0.06 * i))
-                   * env(0.25 - 0.06 * i, 0.002, 0.05)) for i, hz in enumerate([1318.5, 1975.5])) * 0.3
-    return (at(T, 0.0, eject + hiss) + at(T, 0.18, whine) + at(T, 0.78, clack)
-            + at(T, 1.05, lock) + at(T, 1.15, lock * 0.8) + at(T, 1.28, chirp))
-
-
-def medgun_loop():
-    T = 2.0
-    x = seconds(T)
-    # A soft, warm healing hum (a gently pulsing fifth and octave), an airy shimmer and
-    # little bell sparkles scattered round the loop.
-    trem = 0.75 + 0.25 * np.sin(2 * np.pi * 4.0 * x)
-    hum = (np.sin(2 * np.pi * cyc(T, 330) * x) + 0.6 * np.sin(2 * np.pi * cyc(T, 495.5) * x)
-           + 0.4 * np.sin(2 * np.pi * cyc(T, 660) * x) + 0.2 * np.sin(2 * np.pi * cyc(T, 990.5) * x)) * trem
-    air = noise(T, 3000, 9000) * (0.6 + 0.4 * np.sin(2 * np.pi * 2.0 * x)) * 0.06
-    notes = [2093.0, 2349.3, 2637.0, 3136.0, 3520.0]
-    sparkle = np.zeros(len(x))
-    for i in range(10):
-        hz = notes[rng.integers(len(notes))]
-        sparkle += loop_at(T, i * 0.2 + 0.05 * rng.random(), bell(0.4, hz, 0.07) * (0.5 + 0.5 * rng.random()))
-    return loop_echoes(hum * 0.25 + air + sparkle * 0.12, [0.11], [0.25], 6000)
-
-
-# ---------------------------------------------------------------- planetstrike: explosions and impacts
-
-def explosion_small():
-    T = 1.5
-    crack = click(T, 1000, 12000, 0.006) * 1.3
-    blast = lowpass(noise(T, 80, 6000), 3000) * env(T, 0.001, 0.07) * 1.0
-    body = boom_body(T, 65, 0.15, 0.35)
-    debris = crackle(T, 600, 1200, 7000) * env(T, 0.01, 0.25, hold=0.05) * 0.6
-    return echoes(crack + blast + body + debris, [0.15, 0.36], [0.3, 0.12], 2000)
-
-
-def explosion_large():
-    T = 3.4
-    x = seconds(T)
-    # A vehicle going up: a huge crack and blast, a deep sub drop, debris and metal clanks
-    # raining down, and a long rolling rumble.
-    crack = click(T, 800, 12000, 0.01) * 1.5
-    blast = lowpass(noise(T, 40, 5000), 2200) * env(T, 0.001, 0.12) * 1.2
-    body = boom_body(T, 48, 0.4, 0.8, 1.3)
-    rumble = lowpass(noise(T, 18, 250), 100) * env(T, 0.08, 1.0, hold=0.2) * 0.7
-    roll = lowpass(noise(T, 40, 900), 500) * env(T, 0.1, 0.6, hold=0.1) * (0.7 + 0.3 * np.sin(2 * np.pi * 3.3 * x)) * 0.3
-    debris = crackle(T, 400, 1000, 7000) * env(T, 0.02, 0.6, hold=0.15) * 0.6
-    clanks = np.zeros(len(x))
-    for i in range(5):
-        t0 = 0.35 + 0.35 * i + 0.1 * rng.random()
-        k = 0.8 + 0.5 * rng.random()
-        c = ring(0.4, [610 * k, 1130 * k, 1870 * k], [0.08, 0.05, 0.03], [0.5, 0.35, 0.2]) + click(0.4, 800, 6000, 0.004) * 0.5
-        clanks += at(T, t0, c * (0.5 - 0.07 * i))
-    zap = lowpass(saw(900 * np.exp(-x / 0.15) + 50), 3000) * env(T, 0.002, 0.2) * 0.3
-    mix = crack + blast + body + rumble + roll + debris + clanks * 0.4 + zap
-    return echoes(mix, [0.2, 0.45, 0.8], [0.35, 0.2, 0.1], 1500)
-
-
-def impact_armor():
-    T = 0.4
-    # A round slamming into armour: a hard clang of inharmonic metal partials and a spark.
-    clang = ring(T, [620, 1340, 2210, 3480, 4900], [0.07, 0.05, 0.035, 0.02, 0.012], [0.6, 0.5, 0.4, 0.3, 0.2])
-    hit = click(T, 1500, 10000, 0.003) * 1.0 + thump(T, 170, 0.025, drop=0.5) * 0.8
-    spark = crackle(T, 2500, 3000, 12000) * env(T, 0.001, 0.03) * 0.5
-    return clang * 0.55 + hit + spark
-
-
-def impact_ground():
-    T = 0.45
-    x = seconds(T)
-    # A shot thudding into the dirt: a low thud, a spray of grit and a little energy fizz.
-    thud = thump(T, 85, 0.05, drop=0.5) * 1.2
-    dirt = lowpass(noise(T, 100, 3000), 1800) * env(T, 0.001, 0.05) * 0.7
-    grit = crackle(T, 900, 1500, 8000) * env(T, 0.005, 0.08) * 0.5
-    fizz = lowpass(saw(800 * np.exp(-x / 0.05) + 200), 4000) * env(T, 0.001, 0.05) * 0.2
-    return thud + dirt + grit + fizz
-
-
-def bullet_whiz():
-    T = 0.4
-    x = seconds(T)
-    # A near miss: a whistle sweeping down past the ear (Doppler) with an airy rip, loudest
-    # as it passes.
-    pass_env = np.exp(-((x - 0.12) / 0.045) ** 2)
-    f = 1700 + 1500 * (1 - 1 / (1 + np.exp(-(x - 0.12) / 0.02)))
-    whistle = (np.sin(2 * np.pi * phase(f)) + 0.3 * np.sin(2 * np.pi * phase(f * 2.03))) * pass_env * 0.45
-    rip = sweep_noise(T, 9000, 2000, lo=800) * pass_env * 0.7
-    snap = at(T, 0.1, click(0.05, 3000, 12000, 0.0015) * 0.4)
-    return whistle + highpass(rip, 1000) + snap
 
 
 # ---------------------------------------------------------------- planetstrike: world and base
-
-def turret_wall_fire():
-    T = 0.55
-    x = seconds(T)
-    # A base defence turret: heavier than the arena turret, a buzzing zap over a deep knock.
-    f = 1100 * np.exp(-x / 0.05) + 120
-    zap = lowpass(square(f, 0.3) * 0.6 + saw(f * 1.5) * 0.4, 5000) * env(T, 0.001, 0.08)
-    knock = thump(T, 95, 0.07, drop=0.55) * 1.2 + click(T, 300, 6000, 0.006) * 0.8
-    clank = ring(T, [740, 1210, 1990], [0.06, 0.04, 0.025], [0.5, 0.35, 0.25]) * 0.3
-    hiss = noise(T, 2000, 9000) * env(T, 0.002, 0.06) * 0.2
-    return echoes(zap + knock + clank + hiss, [0.08, 0.2], [0.25, 0.1], 2500)
 
 
 def vehicle_spawn():
@@ -1906,6 +1649,715 @@ def kill_confirm():
     return echoes(lowpass(out, 8000), [0.06], [0.22], 6000)
 
 
+# ---------------------------------------------------------------- planetstrike: weapons (layered)
+#
+# Every shot is layers (a crack, a body, a sub, the mechanism) glued by `finish`: saturated, its
+# attacks raised, set in a little room. Written "peak" (see `write`), so tails cost no punch.
+
+def finish(x, drive=2.5, bias=0.05, attack=0.8, sustain=-0.2, comp=None, room=None):
+    """A shot's layers glued: saturated (`drive`, `bias`), the attacks raised and what follows
+    tightened (`attack`, `sustain`), compressed (`comp`: threshold dB, ratio) and set in a
+    `room` (size, decay s, mix), if any."""
+    x = transient(saturate(x, drive, bias), attack, sustain)
+    if comp:
+        x = compress(x, *comp)
+    if room:
+        x = reverb(x, size=room[0], decay=room[1], mix=room[2])
+    return x
+
+
+def dive(x, f0, f1, tau):
+    """A frequency falling (or rising) from `f0` to `f1` Hz with time constant `tau` s."""
+    return f1 + (f0 - f1) * np.exp(-x / tau)
+
+
+def fm(f, depth, ratio=0.5, tau=0.03):
+    """A sine at `f` (an array, Hz), frequency-modulated by one at `ratio` times it, `depth`
+    dying away over `tau` s: an energy bolt's zap."""
+    x = np.arange(len(f)) / RATE
+    return np.sin(2 * np.pi * phase(f) + depth * np.exp(-x / tau) * np.sin(2 * np.pi * phase(f * ratio)))
+
+
+def tone(f):
+    return np.sin(2 * np.pi * phase(f))
+
+
+# ---- infantry
+
+def rifle_fire():
+    T = 0.3
+    x = seconds(T)
+    # The pulse rifle: a fast FM zap diving from 2.3 kHz, a crack, a punch with a sub under
+    # it, the bolt cycling.
+    f = dive(x, 2300, 420, 0.018)
+    zap = (fm(f, 1.6) + 0.3 * square(f * 0.5, 0.3)) * env(T, 0.0004, 0.028, hold=0.008)
+    crack = click(T, 2500, 13000, 0.0018) * 1.3
+    punch = thump(T, 125, 0.022, drop=0.45) * 1.1
+    low = sub(T, 68, 0.035) * 0.35
+    bolt = at(T, 0.04, mech(0.08, "bolt")) * 0.1
+    return finish(lowpass(zap * 0.95, 9000) + crack + punch + low + bolt, 2.5, room=(0.4, 0.16, 0.12))
+
+
+def ember_fire():
+    T = 0.5
+    x = seconds(T)
+    # Red's rifle: low, slow, boomy: a growling square diving from 950 Hz, a blast of noise, a
+    # deep thump and sub, embers crackling after it, a heavy breech.
+    f = dive(x, 950, 150, 0.035)
+    growl = lowpass(square(f, 0.35) * 0.6 + saw(f * 0.5) * 0.5, 3200)
+    growl *= (1 + 0.4 * np.sin(2 * np.pi * 62 * x)) * env(T, 0.0006, 0.06, hold=0.012)
+    crack = click(T, 1500, 9000, 0.003) * 1.3
+    blast = lowpass(noise(T, 120, 4000), 2200) * env(T, 0.0008, 0.03) * 0.8
+    punch = thump(T, 85, 0.04, drop=0.5) * 1.1
+    low = sub(T, 52, 0.08) * 0.55
+    embers = crackle(T, 900, 2000, 9000) * env(T, 0.01, 0.07, hold=0.02) * 0.25
+    clunk = at(T, 0.07, mech(0.12, "clunk")) * 0.1
+    return finish(growl * 1.0 + crack + blast + punch + low + embers + clunk, 3.5, bias=0.12, attack=0.7,
+                  room=(0.7, 0.28, 0.16))
+
+
+def volt_fire():
+    T = 0.32
+    x = seconds(T)
+    # Blue's rifle: a tight electric snap: a very short bright crack, a high zap from 5.6 kHz,
+    # the coils ringing, an arc's crackle, a small hard punch.
+    f = dive(x, 5600, 1500, 0.012)
+    zap = fm(f, 2.2, 1.5, 0.02) * env(T, 0.0003, 0.02, hold=0.004)
+    coil = ring(T, [3100, 4650, 6980], [0.05, 0.035, 0.02], [0.5, 0.35, 0.2]) * 0.3
+    crack = click(T, 4000, 16000, 0.001) * 1.2
+    arc = crackle(T, 3000, 3500, 14000) * env(T, 0.0005, 0.018) * 0.5
+    punch = thump(T, 165, 0.014, drop=0.4) * 0.9
+    low = sub(T, 82, 0.022) * 0.35
+    latch = at(T, 0.035, mech(0.05, "latch")) * 0.08
+    return finish(zap * 0.6 + coil + crack + arc + punch + low + latch, 2.0, attack=1.1, sustain=-0.35,
+                  room=(0.35, 0.14, 0.1))
+
+
+def hive_fire():
+    T = 0.17
+    x = seconds(T)
+    # Green's rifle: thin, fast, chittering: three ring-modulated chirps a hundredth of a
+    # second apart over an insect's buzz, a light tap.
+    out = np.zeros(len(x))
+    for i, (t0, g) in enumerate(((0.0, 1.0), (0.011, 0.75), (0.023, 0.5))):
+        d = 0.05
+        xx = seconds(d)
+        chirp = square(dive(xx, 2500 - 250 * i, 1250, 0.006), 0.25) * np.sin(2 * np.pi * 310 * xx)
+        out += at(T, t0, lowpass(chirp * env(d, 0.0003, 0.007), 7000) * g)
+    crack = click(T, 3500, 12000, 0.0012) * 0.7
+    punch = thump(T, 200, 0.012, drop=0.4) * 0.8
+    buzz = lowpass(saw(np.full(len(x), 155.0)), 2500) * env(T, 0.001, 0.02) * 0.25
+    return finish(out * 0.8 + crack + punch + buzz, 2.2, attack=0.9, sustain=-0.3, room=(0.3, 0.1, 0.08))
+
+
+def scatter_fire():
+    T = 0.85
+    x = seconds(T)
+    # The scatter gun: a wide blast of noise and a spray of pellets over a deep thump and sub,
+    # hard driven, then the pump racked.
+    crack = click(T, 1200, 12000, 0.004) * 1.9
+    blast = lowpass(noise(T, 90, 7000), 3800) * env(T, 0.0006, 0.045) * 1.5
+    spray = crackle(T, 2500, 2500, 12000) * env(T, 0.001, 0.025) * 0.8
+    zap = lowpass(saw(dive(x, 1500, 200, 0.02)), 4500) * env(T, 0.0006, 0.035) * 0.35
+    punch = thump(T, 78, 0.06, drop=0.5) * 1.2
+    low = sub(T, 48, 0.11) * 0.55
+    shot = finish(crack + blast + spray + zap + punch + low, 4.0, bias=0.1, attack=0.7, sustain=-0.1,
+                  comp=(-14, 3), room=(1.0, 0.45, 0.2))
+    return shot + at(T, 0.3, mech(0.24, "slide")) * 0.22 * np.max(np.abs(shot))
+
+
+def lance_crack():
+    T = 1.7
+    x = seconds(T)
+    # The marksman's lance: a supersonic crack, a searing zap from 8.5 kHz, a punch and sub,
+    # a long tail rolling off the hills, the bolt worked after it.
+    crack = click(T, 2500, 17000, 0.0012) * 2.2 + noise(T, 4000, 15000) * env(T, 0.0003, 0.008) * 0.7
+    f = dive(x, 8500, 750, 0.035)
+    zap = (tone(f) + 0.3 * saw(f * 0.5)) * env(T, 0.0004, 0.09, hold=0.008) * 0.7
+    punch = thump(T, 72, 0.06, drop=0.5) * 0.9
+    low = sub(T, 44, 0.12) * 0.45
+    sear = noise(T, 5000, 14000) * env(T, 0.01, 0.12) * 0.08
+    dry = finish(lowpass(crack + zap + punch + low + sear, 15000), 3.0, attack=1.2, sustain=-0.2, comp=(-16, 3))
+    wet = slapback(reverb(dry, size=1.8, decay=1.1, mix=0.3, predelay=0.03), 0.21, 0.22, 3000)
+    return wet + at(T, 0.55, mech(0.3, "slide")) * 0.1 * np.max(np.abs(wet))
+
+
+def striker_fire():
+    T = 1.3
+    x = seconds(T)
+    # A shoulder rocket: the tube's hollow thunk, a sharp ignition and a whoosh tearing away.
+    thunk = thump(T, 92, 0.05, drop=0.5) * 1.3 + click(T, 300, 4500, 0.006) * 0.9 + sub(T, 50, 0.1) * 0.5
+    tube = ring(T, [310, 505, 790], [0.06, 0.04, 0.03], [0.5, 0.35, 0.2]) * 0.3
+    ignite = at(T, 0.03, click(0.1, 2000, 12000, 0.004) * 0.9)
+    whoosh = sweep_noise(T, 2500, 9000, lo=300) * np.sin(np.pi * np.clip(x / 0.35, 0, 1)) ** 2
+    whoosh += sweep_noise(T, 9000, 1500, lo=300) * np.where(x > 0.175, env(T, 0.001, 0.28), 0) * 0.8
+    burn = lowpass(saw(dive(x, 700, 200, 0.4)), 2500) * env(T, 0.03, 0.25, hold=0.1) * 0.2
+    return finish(thunk + tube + ignite + highpass(whoosh, 250) * 0.45 + burn, 2.8, attack=0.6, sustain=0.0,
+                  room=(1.0, 0.5, 0.18))
+
+
+def skyhook_fire():
+    T = 1.25
+    x = seconds(T)
+    # The anti-air launcher: the seeker's chirp, a pneumatic pop throwing the missile out, its
+    # motor lighting a moment later and screaming away with a rising whistle.
+    pop = thump(T, 150, 0.025, drop=0.5) * 0.9 + click(T, 1500, 10000, 0.003) + sub(T, 60, 0.05) * 0.5
+    puff = noise(T, 800, 6000) * env(T, 0.002, 0.03) * 0.5
+    d = T - 0.06
+    motor = at(T, 0.06, sweep_noise(d, 11000, 2500, lo=600) * env(d, 0.02, 0.4, hold=0.15)) * 0.6
+    f = 1100 + 1300 * (1 - np.exp(-x / 0.22))
+    whistle = lowpass(saw(f) * 0.4 + tone(f * 2) * 0.3, 6000) * env(T, 0.05, 0.35, hold=0.12) * 0.28
+    shot = finish(pop + puff + motor + whistle, 2.2, attack=0.7, sustain=0.0, room=(0.9, 0.45, 0.16))
+    return shot + at(T, 0.0, beep(0.06, 3520, 0.03)) * 0.12 * np.max(np.abs(shot))
+
+
+def pistol_fire():
+    T = 0.3
+    x = seconds(T)
+    # The sidearm: a snappy, higher zap, a crack and a small punch, the slide.
+    zap = fm(dive(x, 3100, 700, 0.02), 1.0) * env(T, 0.0004, 0.03, hold=0.006)
+    crack = click(T, 3000, 13000, 0.0015) * 0.9
+    punch = thump(T, 150, 0.018, drop=0.45) * 0.9
+    low = sub(T, 78, 0.025) * 0.4
+    slide = at(T, 0.05, mech(0.09, "slide")) * 0.14
+    return finish(zap * 0.6 + crack + punch + low + slide, 2.2, attack=1.0, sustain=-0.3, room=(0.35, 0.14, 0.12))
+
+
+def medgun_loop():
+    T = 2.0
+    x = seconds(T)
+    # The heal beam (a loop): a warm fifth and octave pulsing five times a second over a soft
+    # low body, an airy shimmer and bell sparkles scattered round the loop.
+    trem = 0.7 + 0.3 * np.sin(2 * np.pi * cyc(T, 5.0) * x)
+    hum = (np.sin(2 * np.pi * cyc(T, 330) * x) + 0.6 * np.sin(2 * np.pi * cyc(T, 495.5) * x)
+           + 0.4 * np.sin(2 * np.pi * cyc(T, 660) * x) + 0.2 * np.sin(2 * np.pi * cyc(T, 990.5) * x)) * trem
+    body = np.sin(2 * np.pi * cyc(T, 110) * x) * (0.8 + 0.2 * np.sin(2 * np.pi * cyc(T, 2.5) * x))
+    air = noise(T, 3000, 9000) * (0.6 + 0.4 * np.sin(2 * np.pi * cyc(T, 2.0) * x)) * 0.07
+    notes = [2093.0, 2349.3, 2637.0, 3136.0, 3520.0]
+    sparkle = np.zeros(len(x))
+    for i in range(10):
+        hz = notes[rng.integers(len(notes))]
+        sparkle += loop_at(T, i * 0.2 + 0.05 * rng.random(), bell(0.4, hz, 0.07) * (0.5 + 0.5 * rng.random()))
+    return loop_echoes(hum * 0.25 + body * 0.2 + air + sparkle * 0.12, [0.11], [0.25], 6000)
+
+
+def repair_loop():
+    T = 2.0
+    x = seconds(T)
+    # The repair beam (a loop): a welder's arc: a buzzing mains hum, sparks crackling in
+    # bursts, a thin servo whine and hiss.
+    f = const(T, 100)
+    buzz = lowpass(square(f, 0.3) * 0.5 + saw(f * 2) * 0.4, 2600) * (0.75 + 0.25 * pulses(T, 50, 2))
+    arc = crackle(T, 500, 2500, 12000) * (0.4 + 0.6 * pulses(T, 7, 3))
+    whine = np.sin(2 * np.pi * cyc(T, 1480) * x) * 0.08 * (0.7 + 0.3 * np.sin(2 * np.pi * cyc(T, 3) * x))
+    hiss = noise(T, 4000, 11000) * 0.05
+    return buzz * 0.3 + arc * 0.35 + whine + hiss
+
+
+# ---- MAX arms
+
+def pounder_fire():
+    T = 0.15
+    # A MAX's twin chainguns: two heavy barks a hundredth apart over a sub, the belt rattling.
+
+    def one(d):
+        xx = seconds(d)
+        zap = lowpass(square(dive(xx, 900, 300, 0.008), 0.35), 4500) * env(d, 0.0004, 0.011) * 0.25
+        return (click(d, 1600, 11000, 0.0016) * 1.4 + noise(d, 250, 4500) * env(d, 0.0004, 0.009) * 0.8
+                + thump(d, 108, 0.02, drop=0.5) * 1.0 + zap)
+
+    shot = one(T) + at(T, 0.011, one(T - 0.011)) * 0.65
+    return finish(shot + sub(T, 62, 0.03) * 0.4 + mech(T, "belt") * 0.12, 3.2, bias=0.1, room=(0.3, 0.1, 0.08))
+
+
+def mauler_fire():
+    T = 1.0
+    # A MAX's twin cannons: a double thud (the second barrel a twentieth later), a sub, the
+    # tubes ringing, the breeches and a servo after.
+
+    def one(d, hz):
+        return (click(d, 1300, 12000, 0.004) * 1.7 + lowpass(noise(d, 120, 5500), 3200) * env(d, 0.0008, 0.035) * 0.9
+                + thump(d, hz, 0.075, drop=0.5) * 1.2)
+
+    shot = one(T, 88) + at(T, 0.048, one(T - 0.048, 76)) * 0.85
+    tube = ring(T, [420, 690, 1130], [0.05, 0.035, 0.02], [0.4, 0.3, 0.2]) * 0.2
+    shot = finish(shot + sub(T, 50, 0.13) * 0.55 + tube, 3.6, bias=0.1, attack=0.7, sustain=-0.1, comp=(-14, 3),
+                  room=(0.9, 0.4, 0.18))
+    k = np.max(np.abs(shot))
+    return shot + (at(T, 0.2, mech(0.2, "clunk")) * 0.18 + at(T, 0.28, mech(0.18, "servo")) * 0.05) * k
+
+
+def burster_fire():
+    T = 0.24
+    x = seconds(T)
+    # A MAX's flak arms: a hollow "thoomp" out of a tube, twice.
+    thoomp = tone(dive(x, 210, 95, 0.02)) * env(T, 0.0006, 0.035) * 1.3
+    crack = click(T, 1500, 10000, 0.002)
+    bark = noise(T, 400, 5000) * env(T, 0.0005, 0.012) * 0.7
+    tube = ring(T, [640, 1010, 1620], [0.03, 0.02, 0.012], [0.5, 0.35, 0.2]) * 0.3
+    shot = thoomp + crack + bark + tube
+    return finish(shot + at(T, 0.014, shot) * 0.55 + sub(T, 70, 0.035) * 0.6, 3.0, room=(0.4, 0.14, 0.1))
+
+
+# ---- vehicles and turrets
+
+def boom_body(T, hz, decay, rumble_decay, gain=1.0):
+    """An explosion's low end: a falling sub thump and a dull rumble."""
+    return (thump(T, hz, decay, drop=0.5) * 1.3
+            + lowpass(noise(T, 20, 400), 180) * env(T, 0.003, rumble_decay) * 0.7) * gain
+
+
+def cannon_light():
+    T = 1.4
+    x = seconds(T)
+    # The light tank's cannon: crack, blast, a thump with a sub under it, the barrel's clank;
+    # hard driven, then out over the land and back off a wall; the breech after.
+    crack = click(T, 1500, 13000, 0.004) * 2.0
+    blast = lowpass(noise(T, 150, 6000), 4000) * env(T, 0.0008, 0.04) * 1.3
+    body = boom_body(T, 80, 0.09, 0.22)
+    low = sub(T, 46, 0.14) * 0.5
+    clank = ring(T, [880, 1530, 2470], [0.06, 0.04, 0.025], [0.4, 0.3, 0.2]) * 0.18
+    zap = lowpass(saw(dive(x, 1600, 180, 0.03)), 5000) * env(T, 0.0008, 0.04) * 0.3
+    dry = finish(crack + blast + body + low + clank + zap, 3.5, bias=0.1, sustain=-0.05, comp=(-14, 3))
+    wet = slapback(reverb(dry, size=1.4, decay=0.8, mix=0.25, predelay=0.025), 0.14, 0.2, 2000)
+    return wet + at(T, 0.32, mech(0.2, "clunk")) * 0.1 * np.max(np.abs(wet))
+
+
+def cannon_heavy():
+    T = 2.6
+    x = seconds(T)
+    # The heavy tank's: deeper, longer: a 34 Hz sub, a rolling rumble, a long tail.
+    crack = click(T, 1000, 12000, 0.007) * 2.2
+    blast = lowpass(noise(T, 60, 5000), 2500) * env(T, 0.001, 0.07) * 1.5
+    body = boom_body(T, 52, 0.25, 0.55, 1.2)
+    low = sub(T, 34, 0.3) * 0.75
+    rumble = lowpass(noise(T, 20, 200), 90) * env(T, 0.05, 0.6, hold=0.1) * 0.5
+    clank = ring(T, [520, 910, 1480], [0.12, 0.08, 0.05], [0.4, 0.3, 0.2]) * 0.15
+    zap = lowpass(saw(dive(x, 1100, 90, 0.05)), 3500) * env(T, 0.001, 0.08) * 0.3
+    dry = finish(crack + blast + body + low + rumble + clank + zap, 4.0, bias=0.1, attack=0.7, sustain=0.0,
+                 comp=(-14, 3))
+    wet = slapback(reverb(dry, size=2.2, decay=1.6, mix=0.3, predelay=0.03), 0.23, 0.25, 1500)
+    return wet + at(T, 0.5, mech(0.3, "clunk")) * 0.1 * np.max(np.abs(wet))
+
+
+def rail_fire():
+    T = 2.0
+    x = seconds(T)
+    # The railgun: a searing crack, a zap falling all the way from 9.5 kHz, a huge sub snap,
+    # the rails humming down and sizzling after.
+    crack = click(T, 3000, 18000, 0.001) * 2.4
+    f = dive(x, 9500, 180, 0.05)
+    zap = (fm(f, 2.5, 0.5, 0.08) + 0.4 * saw(f * 0.25)) * env(T, 0.0004, 0.12, hold=0.01) * 0.85
+    snap = thump(T, 60, 0.09, drop=0.6) * 1.1
+    low = sub(T, 36, 0.25) * 0.75
+    sizzle = crackle(T, 1800, 3000, 14000) * env(T, 0.01, 0.3, hold=0.03) * 0.45
+    hum = tone(dive(x, 240, 60, 0.3)) * (1 + 0.5 * np.sin(2 * np.pi * 50 * x)) * env(T, 0.002, 0.35) * 0.4
+    dry = finish(lowpass(crack + zap + snap + low + sizzle + hum, 16000), 3.2, attack=1.2, sustain=-0.1,
+                 comp=(-16, 3))
+    return slapback(reverb(dry, size=2.0, decay=1.4, mix=0.3, predelay=0.03), 0.25, 0.2, 2500)
+
+
+def autocannon_fire():
+    T = 0.26
+    # A vehicle's autocannon: a hard, dry, chesty thump and crack, the bolt.
+    crack = click(T, 1400, 10000, 0.0025) * 1.6
+    bark = noise(T, 200, 4000) * env(T, 0.0005, 0.014) * 0.9
+    punch = thump(T, 118, 0.03, drop=0.5) * 1.2
+    bolt = at(T, 0.05, mech(0.08, "bolt")) * 0.14
+    return finish(crack + bark + punch + sub(T, 58, 0.045) * 0.5 + bolt, 3.4, bias=0.1, room=(0.5, 0.2, 0.12))
+
+
+def flak_fire():
+    T = 0.2
+    x = seconds(T)
+    # The AA gun: a short, hard pop: crack, bark, punch, a tiny zap, the barrel's ring.
+    crack = click(T, 1500, 10000, 0.002)
+    bark = noise(T, 400, 5000) * env(T, 0.0005, 0.012) * 0.7
+    punch = thump(T, 150, 0.025, drop=0.5) * 1.2
+    zap = lowpass(square(dive(x, 1300, 300, 0.012), 0.3), 5000) * env(T, 0.0005, 0.015) * 0.25
+    barrel = ring(T, [900, 1450], [0.03, 0.02], [0.5, 0.3]) * 0.15
+    return finish(crack + bark + punch + zap + barrel + sub(T, 75, 0.03) * 0.35, 2.8, room=(0.5, 0.16, 0.1))
+
+
+def rocket_fire():
+    T = 1.3
+    x = seconds(T)
+    # Ignition pop, then a hissing roar whooshing away, its tone falling as it leaves.
+    pop = thump(T, 110, 0.05, drop=0.5) + click(T, 600, 8000, 0.005) * 0.9 + sub(T, 55, 0.08) * 0.6
+    roar = sweep_noise(T, 9000, 1200, lo=200) * env(T, 0.01, 0.35, hold=0.1) * 0.6
+    f = dive(x, 660, 140, 0.6)
+    burn = lowpass(saw(f) * 0.5 + square(f * 1.01, 0.4) * 0.3, 2500) * env(T, 0.01, 0.3, hold=0.08) * 0.35
+    rumble = lowpass(noise(T, 25, 300), 150) * env(T, 0.005, 0.25) * 0.5
+    return finish(pop + roar + burn + rumble, 2.5, attack=0.6, sustain=0.0, room=(1.0, 0.5, 0.16))
+
+
+def missile_fire():
+    T = 1.2
+    x = seconds(T)
+    # A homing missile off its rail: a sharp release, a hissing motor, a rising whistle.
+    release = click(T, 1500, 10000, 0.003) + thump(T, 140, 0.03, drop=0.5) * 0.7 + mech(T, "latch") * 0.3
+    hiss = sweep_noise(T, 10000, 2500, lo=600) * env(T, 0.02, 0.4, hold=0.15) * 0.6
+    f = 900 + 900 * (1 - np.exp(-x / 0.25))
+    whistle = lowpass(saw(f) * 0.4 + tone(f * 2) * 0.3, 5000) * env(T, 0.03, 0.35, hold=0.1) * 0.25
+    return finish(release + hiss + whistle, 2.0, attack=0.7, sustain=0.0, room=(0.9, 0.4, 0.14))
+
+
+def air_cannon():
+    T = 0.13
+    x = seconds(T)
+    # An aircraft's rotary cannon, one round of its "brrrt": a bright pop with a saw's buzz.
+    crack = click(T, 2500, 12000, 0.0012) * 1.4
+    punch = thump(T, 185, 0.013, drop=0.5)
+    buzz = lowpass(saw(np.full(len(x), 370.0)), 5000) * env(T, 0.0003, 0.012) * 0.6
+    zap = lowpass(square(dive(x, 1800, 500, 0.006), 0.3), 7000) * env(T, 0.0003, 0.01) * 0.3
+    return finish(crack + punch + buzz + zap + sub(T, 92, 0.018) * 0.4, 2.6, attack=1.0, sustain=-0.3,
+                  room=(0.3, 0.1, 0.08))
+
+
+def chaingun():
+    T = 0.12
+    x = seconds(T)
+    # A vehicle's machine gun: crack, bark and punch, the belt.
+    crack = click(T, 1800, 11000, 0.0015) * 1.4
+    bark = noise(T, 300, 5000) * env(T, 0.0004, 0.008) * 0.6
+    punch = thump(T, 135, 0.016, drop=0.5) * 1.1
+    zap = lowpass(square(dive(x, 1000, 350, 0.008), 0.35), 5000) * env(T, 0.0004, 0.01) * 0.25
+    return finish(crack + bark + punch + zap + sub(T, 74, 0.02) * 0.3 + mech(T, "belt") * 0.1, 2.8,
+                  room=(0.3, 0.1, 0.08))
+
+
+def turret_wall_fire():
+    T = 0.8
+    x = seconds(T)
+    # A base's wall turret: a heavy buzzing zap over a deep knock and sub, the mount's clank,
+    # its servo settling.
+    f = dive(x, 1100, 120, 0.05)
+    zap = lowpass(square(f, 0.3) * 0.6 + saw(f * 1.5) * 0.4, 5000) * env(T, 0.001, 0.08)
+    knock = thump(T, 95, 0.07, drop=0.55) * 1.2 + click(T, 300, 6000, 0.006) * 0.8
+    clank = ring(T, [740, 1210, 1990], [0.06, 0.04, 0.025], [0.5, 0.35, 0.25]) * 0.3
+    hiss = noise(T, 2000, 9000) * env(T, 0.002, 0.06) * 0.2
+    shot = finish(zap + knock + clank + hiss + sub(T, 48, 0.1) * 0.5, 3.0, comp=(-14, 3), room=(1.0, 0.45, 0.2))
+    return shot + at(T, 0.25, mech(0.2, "servo")) * 0.05 * np.max(np.abs(shot))
+
+
+def spitfire_fire():
+    T = 0.11
+    x = seconds(T)
+    # An engineer's little turret: a small, tinny, spitting zap.
+    zap = square(dive(x, 2600, 900, 0.008), 0.2) * env(T, 0.0003, 0.012)
+    crack = click(T, 4000, 13000, 0.0008) * 0.6
+    punch = thump(T, 230, 0.01, drop=0.4) * 0.6
+    tin = ring(T, [2900, 4300], [0.012, 0.008], [0.5, 0.3]) * 0.15
+    return finish(lowpass(zap, 8000) * 0.6 + crack + punch + tin, 1.8, attack=0.9, sustain=-0.4)
+
+
+# ---- shots heard from far off (played instead of the shot's own sound beyond its range)
+
+def tail_small():
+    T = 0.25
+    src = click(T, 800, 6000, 0.003) + thump(T, 110, 0.03, drop=0.5) * 1.2 + noise(T, 200, 3000) * env(T, 0.001, 0.02)
+    return far(src, tail=0.8, hi=1100)
+
+
+def tail_medium():
+    T = 0.6
+    src = (click(T, 800, 8000, 0.005) + lowpass(noise(T, 100, 4000), 2500) * env(T, 0.001, 0.05)
+           + boom_body(T, 78, 0.1, 0.25))
+    return far(src, tail=1.5, hi=800)
+
+
+def tail_heavy():
+    T = 1.0
+    src = (lowpass(noise(T, 60, 3000), 1800) * env(T, 0.001, 0.08) + boom_body(T, 48, 0.3, 0.6, 1.2)
+           + sub(T, 32, 0.3))
+    return far(src, tail=2.4, hi=550)
+
+
+# ---- impacts
+
+def impact_body(v):
+    T = 0.28
+    x = seconds(T)
+    # A bolt into a body's armour: a dull slap and thud, the bolt's energy fizzing out.
+    thud = thump(T, 150 - 20 * v, 0.03, drop=0.5) * 1.2
+    slap = lowpass(noise(T, 250, 3000), 1800 + 400 * v) * env(T, 0.0006, 0.018) * 0.9
+    fizz = lowpass(saw(dive(x, 1200 + 300 * v, 300, 0.03)), 5000) * env(T, 0.001, 0.04) * 0.3
+    sizzle = crackle(T, 1500, 3000, 11000) * env(T, 0.002, 0.05) * 0.3
+    return finish(thud + slap + fizz + sizzle, 2.5, sustain=-0.3)
+
+
+def impact_shield():
+    T = 0.6
+    x = seconds(T)
+    # A shot stopped by a shield: a fluttering inharmonic hum sagging, a crack and an arc.
+    f = dive(x, 520, 300, 0.15)
+    hum = (tone(f) + 0.5 * tone(f * 1.51) + 0.3 * tone(f * 2.27)) * (0.6 + 0.4 * np.sin(2 * np.pi * 38 * x))
+    hum *= env(T, 0.001, 0.14)
+    crack = click(T, 2000, 12000, 0.002) * 0.9
+    arc = crackle(T, 2500, 2500, 13000) * env(T, 0.001, 0.07) * 0.6
+    return finish(hum * 0.6 + crack + arc + sub(T, 90, 0.05) * 0.6, 2.0, room=(0.5, 0.25, 0.15))
+
+
+def impact_armor(v):
+    T = 0.5
+    k = 1 + 0.18 * v
+    # A round slamming into a vehicle's armour: a hard clang of inharmonic partials, a spark.
+    clang = ring(T, [620 * k, 1340 * k, 2210 * k, 3480 * k, 4900 * k], [0.07, 0.05, 0.035, 0.02, 0.012],
+                 [0.6, 0.5, 0.4, 0.3, 0.2])
+    hit = click(T, 1500, 10000, 0.003) + thump(T, 170, 0.025, drop=0.5) * 0.9
+    spark = crackle(T, 2500, 3000, 12000) * env(T, 0.001, 0.03) * 0.5
+    return finish(clang * 0.6 + hit + spark + sub(T, 95, 0.03) * 0.5, 2.6, room=(0.4, 0.2, 0.1))
+
+
+def impact_ground(v):
+    T = 0.5
+    x = seconds(T)
+    # A shot thudding into the dirt: a low thud, a spray of grit and a little energy fizz.
+    thud = thump(T, 85 + 10 * v, 0.05, drop=0.5) * 1.3
+    dirt = lowpass(noise(T, 100, 3000), 1800 + 300 * v) * env(T, 0.001, 0.05) * 0.8
+    grit = crackle(T, 900 + 300 * v, 1500, 8000) * env(T, 0.005, 0.08 + 0.02 * v) * 0.6
+    fizz = lowpass(saw(dive(x, 800, 200, 0.05)), 4000) * env(T, 0.001, 0.05) * 0.2
+    return finish(thud + dirt + grit + fizz + sub(T, 55, 0.06) * 0.5, 2.4, attack=0.7, sustain=0.0)
+
+
+def impact_metal(v):
+    T = 0.35
+    k = 1 + 0.25 * v
+    # A shot on a wall or a deck: a thin plate's ping, a tick and a spark.
+    ping = ring(T, [1150 * k, 2480 * k, 3920 * k, 5230 * k], [0.05, 0.035, 0.02, 0.012], [0.6, 0.5, 0.35, 0.2])
+    tick = click(T, 2500, 12000, 0.0012)
+    thunk = thump(T, 240, 0.012, drop=0.4) * 0.5
+    spark = crackle(T, 3000, 3500, 13000) * env(T, 0.001, 0.025) * 0.4
+    return finish(ping * 0.5 + tick + thunk + spark, 2.0, room=(0.4, 0.18, 0.12))
+
+
+def ricochet(v):
+    T = 0.55
+    x = seconds(T)
+    # A bolt glancing off: a tick and a whine sliding down and away, wavering.
+    f0 = (2600, 3400, 2100)[v]
+    f = f0 * np.exp(-x / (0.5, 0.35, 0.7)[v]) * (1 + 0.02 * np.sin(2 * np.pi * (28 + 6 * v) * x))
+    whine = (tone(f) + 0.35 * tone(f * 2.006)) * env(T, 0.002, (0.14, 0.1, 0.18)[v])
+    tick = click(T, 3000, 13000, 0.001) * 0.9 + ring(T, [f0 * 1.5, f0 * 2.4], [0.02, 0.012], [0.4, 0.25]) * 0.3
+    return finish(lowpass(whine * 0.6 + tick, 12000), 1.6, sustain=0.0, room=(0.6, 0.3, 0.2))
+
+
+# ---- explosions
+
+def blast_mix(T, size):
+    """An explosion's layers before the space it is in: `size` 0 (a small shell) to 1.3 (a
+    vehicle going up): bigger ones lower, longer, with more debris."""
+    x = seconds(T)
+    hz = 70 - 22 * size
+    crack = click(T, 1000 - 200 * size, 12000, 0.006 + 0.004 * size) * 1.9
+    blast = lowpass(noise(T, 80 - 40 * size, 6000), 3000 - 800 * size) * env(T, 0.001, 0.07 + 0.05 * size) * 1.4
+    body = boom_body(T, hz, 0.15 + 0.25 * size, 0.35 + 0.45 * size, 1 + 0.3 * size)
+    low = sub(T, hz * 0.62, 0.2 + 0.3 * size, drop=0.4) * 0.7
+    debris = crackle(T, 600 - 200 * size, 1200, 7000) * env(T, 0.01 + 0.01 * size, 0.25 + 0.35 * size,
+                                                         hold=0.05 + 0.1 * size) * 0.6
+    zap = lowpass(saw(dive(x, 900, 50, 0.05 + 0.1 * size)), 3000) * env(T, 0.002, 0.08 + 0.12 * size) * 0.3
+    return crack + blast + body + low + debris + zap
+
+
+def rolling(T, gain):
+    """A big blast's rumble rolling on."""
+    x = seconds(T)
+    rumble = lowpass(noise(T, 18, 250), 100) * env(T, 0.08, 1.0, hold=0.2) * 0.7
+    roll = lowpass(noise(T, 40, 900), 500) * env(T, 0.1, 0.6, hold=0.1) * (0.7 + 0.3 * np.sin(2 * np.pi * 3.3 * x)) * 0.3
+    return (rumble + roll) * gain
+
+
+def clanks(T, n, t0, gap):
+    """`n` pieces of metal coming down, the first `t0` s in, about `gap` s apart."""
+    out = np.zeros(int(T * RATE))
+    for i in range(n):
+        t = t0 + gap * i + 0.1 * rng.random()
+        k = 0.8 + 0.5 * rng.random()
+        c = ring(0.4, [610 * k, 1130 * k, 1870 * k], [0.08, 0.05, 0.03], [0.5, 0.35, 0.2]) + click(0.4, 800, 6000, 0.004) * 0.5
+        out += at(T, t, c * (0.5 - 0.4 * i / n))
+    return out
+
+
+def explosion_small():
+    T = 1.7
+    dry = finish(blast_mix(T, 0.0), 3.5, bias=0.1, sustain=0.0, comp=(-14, 3))
+    return slapback(reverb(dry, size=1.4, decay=0.9, mix=0.25, predelay=0.02), 0.15, 0.2, 2000)
+
+
+def explosion_medium():
+    T = 2.4
+    dry = finish(blast_mix(T, 0.5) + rolling(T, 0.5), 3.8, bias=0.1, attack=0.7, sustain=0.0, comp=(-14, 3))
+    return slapback(reverb(dry, size=1.8, decay=1.3, mix=0.28, predelay=0.025), 0.2, 0.22, 1800)
+
+
+def explosion_large():
+    T = 3.4
+    dry = finish(blast_mix(T, 1.0) + rolling(T, 1.0), 4.0, bias=0.1, attack=0.7, sustain=0.0, comp=(-14, 3))
+    return slapback(reverb(dry, size=2.2, decay=1.9, mix=0.3, predelay=0.03), 0.26, 0.25, 1500)
+
+
+def explosion_wreck():
+    T = 4.4
+    # A vehicle going up: the biggest blast, something inside cooking off after it, plates and
+    # fittings raining down and clattering.
+    cook = at(T, 0.45, thump(0.6, 70, 0.1, drop=0.5) + click(0.6, 900, 9000, 0.005) * 0.8
+              + lowpass(noise(0.6, 100, 4000), 2500) * env(0.6, 0.001, 0.05) * 0.7) * 0.55
+    clatter = crackle(T, 250, 1500, 9000) * env(T, 0.2, 0.9, hold=0.5) * 0.35
+    mix = blast_mix(T, 1.3) + rolling(T, 1.2) + cook + clanks(T, 8, 0.4, 0.3) * 0.45 + clatter
+    dry = finish(mix, 4.0, bias=0.1, attack=0.7, sustain=0.0, comp=(-14, 3))
+    return slapback(reverb(dry, size=2.4, decay=2.2, mix=0.3, predelay=0.03), 0.28, 0.25, 1500)
+
+
+def airburst():
+    T = 1.1
+    # A flak shell bursting in mid-air: a sharp crack, a puff and a crackling spray of
+    # fragments, nothing near to echo off.
+    crack = click(T, 1200, 12000, 0.005) * 1.3
+    puff = lowpass(noise(T, 100, 3000), 1500) * env(T, 0.001, 0.08) * 0.8
+    spray = crackle(T, 1500, 1500, 9000) * env(T, 0.003, 0.18, hold=0.04) * 1.2
+    body = thump(T, 95, 0.07, drop=0.5) * 0.9 + sub(T, 58, 0.1) * 0.6
+    dry = finish(crack + puff + spray + body, 3.0, sustain=0.0, comp=(-14, 3))
+    return reverb(dry, size=1.6, decay=0.8, mix=0.3, predelay=0.03)
+
+
+# ---- near misses
+
+def bullet_whiz(v):
+    T = 0.42
+    x = seconds(T)
+    # A near miss: a whistle sweeping down past the ear (Doppler) with an airy rip, loudest
+    # as it passes, a tiny snap.
+    t0, w, f0 = 0.12, (0.045, 0.035, 0.06)[v], (1700, 2300, 1300)[v]
+    passing = np.exp(-((x - t0) / w) ** 2)
+    f = f0 + f0 * 0.9 * (1 - 1 / (1 + np.exp(-(x - t0) / (w * 0.45))))
+    whistle = (tone(f) + 0.3 * tone(f * 2.03)) * passing * 0.45
+    rip = sweep_noise(T, 9000, 2000, lo=800) * passing * 0.7
+    snap = at(T, t0 - 0.02, click(0.05, 3000, 12000, 0.0015) * 0.4)
+    return whistle + highpass(rip, 1000) + snap
+
+
+def whiz_heavy():
+    T = 0.7
+    x = seconds(T)
+    # A shell or rocket going by: a low tearing whoosh, its tone dropping as it passes.
+    t0, w = 0.25, 0.1
+    passing = np.exp(-((x - t0) / w) ** 2)
+    f = 190 + 260 * (1 - 1 / (1 + np.exp(-(x - t0) / 0.05)))
+    drone = (tone(f) + 0.4 * saw(f * 2.01) * 0.5) * passing * 0.5
+    rush = sweep_noise(T, 4000, 500, lo=100) * passing
+    flutter = 1 + 0.3 * np.sin(2 * np.pi * 31 * x)
+    return (lowpass(drone, 2500) + rush * 0.8) * flutter
+
+
+# ---- reloads and spent cases
+
+def placed(T, events):
+    """The `events` ((start s, samples, gain), ...) in `T` s, in a small room."""
+    out = sum(at(T, t, y) * g for t, y, g in events)
+    return reverb(out, size=0.3, decay=0.14, mix=0.1)
+
+
+def cell_hiss(d):
+    return noise(d, 3000, 10000) * env(d, 0.005, d * 0.25) * 0.4
+
+
+def reload_rifle():
+    T = 1.5
+    # A rifle: the catch, the cell out with a hiss, a short charging whir, the new cell in, the
+    # bolt run home.
+    return placed(T, [
+        (0.0, mech(0.06, "latch"), 0.7), (0.1, mech(0.16, "slide"), 0.8), (0.14, cell_hiss(0.2), 0.5),
+        (0.4, servo(0.4, 260, 900, 0.25) * env(0.4, 0.02, 0.06, hold=0.3), 0.25),
+        (0.9, mech(0.12, "clunk"), 0.9), (0.95, mech(0.06, "latch"), 0.5), (1.2, mech(0.1, "bolt"), 1.0),
+    ])
+
+
+def reload_scatter():
+    T = 2.0
+    # The scatter gun: four shells thumbed into the tube, the pump racked.
+
+    def shell(k):
+        d = 0.14
+        return (click(d, 1200, 7000, 0.003) + thump(d, 300 * k, 0.012, drop=0.3) * 0.7
+                + ring(d, [520 * k, 870 * k], [0.03, 0.02], [0.4, 0.25]))
+
+    events = [(0.12 + 0.36 * i, shell(1 + 0.06 * i), 0.8) for i in range(4)]
+    return placed(T, events + [(1.58, mech(0.26, "slide"), 1.0)])
+
+
+def reload_lance():
+    T = 2.3
+    # The lance: the bolt drawn, the spent cell hissing out, a long charge rising, the cell
+    # home, the bolt closed and locked.
+    return placed(T, [
+        (0.0, mech(0.2, "slide"), 0.9), (0.28, cell_hiss(0.3), 0.6),
+        (0.6, servo(0.9, 220, 1400, 0.5) * env(0.9, 0.03, 0.08, hold=0.78), 0.28),
+        (1.58, mech(0.16, "clunk"), 1.0), (1.9, mech(0.2, "slide"), 0.9), (2.12, mech(0.06, "latch"), 0.7),
+    ])
+
+
+def reload_launcher():
+    T = 1.8
+    # A launcher: the tube opened, a rocket slid down it and seated, the catch, a ready beep.
+    d = 0.6
+    x = seconds(d)
+    slide_in = (sweep_noise(d, 900, 4000, lo=200) * np.sin(np.pi * np.clip(x / d, 0, 1)) ** 2
+                + ring(d, [310, 505], [0.2, 0.15], [0.15, 0.1]))
+    seat = mech(0.25, "clunk") + sub(0.25, 70, 0.05) * 0.6
+    return placed(T, [
+        (0.0, mech(0.2, "clunk"), 0.8), (0.4, slide_in, 0.35), (1.03, seat, 1.0),
+        (1.4, mech(0.06, "latch"), 0.7), (1.55, beep(0.12, 1760, 0.07), 0.3),
+    ])
+
+
+def reload_pistol():
+    T = 1.0
+    # The pistol: the catch, the cell dropped, a new one slapped in, the slide.
+    return placed(T, [
+        (0.0, mech(0.05, "latch"), 0.7), (0.07, cell_hiss(0.12), 0.4), (0.48, mech(0.1, "bolt"), 0.9),
+        (0.7, mech(0.14, "slide"), 1.0),
+    ])
+
+
+def reload_heavy():
+    T = 2.4
+    # A MAX's arms: servos opening the feed, a belt run through, the breeches slammed.
+    return placed(T, [
+        (0.0, mech(0.55, "servo"), 0.3), (0.5, mech(0.8, "belt"), 0.8), (1.38, mech(0.25, "clunk"), 1.0),
+        (1.5, mech(0.45, "servo"), 0.25), (2.02, mech(0.2, "clunk"), 0.9), (2.1, mech(0.2, "clunk"), 0.7),
+        (2.26, mech(0.06, "latch"), 0.6),
+    ])
+
+
+def reload_done():
+    T = 0.3
+    # Ready again: a latch and a quick two-note chirp.
+    chirp = sum(at(T, 0.05 * i, np.sin(2 * np.pi * hz * seconds(T - 0.05 * i)) * env(T - 0.05 * i, 0.002, 0.04))
+                for i, hz in enumerate([1318.5, 1975.5]))
+    return at(T, 0.0, mech(0.06, "latch")) * 0.6 + lowpass(chirp, 9000) * 0.35
+
+
+def casing(v):
+    T = 0.5
+    # A spent case on the floor: a few tinks, closer and quieter each bounce.
+    out = np.zeros(int(T * RATE))
+    for t, g in ((0.0, 1.0), (0.09 + 0.02 * v, 0.6), (0.15 + 0.03 * v, 0.35), (0.19 + 0.035 * v, 0.2)):
+        out += at(T, t, mech(0.12, "tink")) * g
+    return out
+
+
+def casing_shell():
+    T = 0.7
+    # A cannon's case: bigger, hollow.
+    out = np.zeros(int(T * RATE))
+    for t, g in ((0.0, 1.0), (0.16, 0.6), (0.27, 0.35), (0.34, 0.2)):
+        k = 0.92 + 0.16 * rng.random()
+        c = (ring(0.2, [1250 * k, 2080 * k, 3340 * k], [0.06, 0.04, 0.025], [1.0, 0.6, 0.35])
+             + click(0.2, 1500, 9000, 0.001) * 0.6 + thump(0.2, 300, 0.01, drop=0.3) * 0.3)
+        out += at(T, t, c) * g
+    return out
+
+
 SOUNDS = {
     # name: (generator, level dBFS, seed[, "peak"]): the level is the whole sound's RMS, or
     # with "peak" that of its loudest 100 ms (see `write`).
@@ -1926,7 +2378,6 @@ SOUNDS = {
     "deny": (deny, -21.0, 101),
     "empty": (empty, -22.0, 111),
     "reload": (reload, -24.0, 121),
-    "reload_done": (reload_done, -21.0, 131),
     "pickup": (pickup, -19.0, 141),
     "score_bleep": (score_bleep, -22.0, 151),
     "score_tag": (score_tag, -21.0, 161),
@@ -1967,15 +2418,7 @@ SOUNDS = {
     "engine_bus": (engine_bus, -26.0, 403),
     "engine_vtol": (engine_vtol, -25.0, 404),
     "tracks": (tracks, -28.0, 405),
-    # Planetstrike: vehicle weapons.
-    "cannon_light": (cannon_light, -15.0, 411),
-    "cannon_heavy": (cannon_heavy, -14.0, 412),
-    "flak_fire": (flak_fire, -18.0, 413),
-    "airburst": (airburst, -17.0, 414),
-    "rocket_fire": (rocket_fire, -16.0, 415),
-    "chaingun": (chaingun, -18.0, 416),
-    "missile_fire": (missile_fire, -16.0, 417),
-    "air_cannon": (air_cannon, -18.0, 418),
+    # Planetstrike: lock-ons, kits and gear.
     "lock_tone": (lock_tone, -22.0, 419),
     "lock_warning": (lock_warning, -19.0, 420),
     "flares": (flares, -18.0, 460),
@@ -1985,21 +2428,7 @@ SOUNDS = {
     "jet_thrust": (jet_thrust, -20.0, 465),
     "chute_open": (chute_open, -19.0, 466),
     "hack_done": (hack_done, -20.0, 463),
-    # Planetstrike: infantry weapons.
-    "rifle_fire": (rifle_fire, -17.0, 421),
-    "lance_crack": (lance_crack, -14.0, 422),
-    "striker_fire": (striker_fire, -15.0, 423),
-    "pistol_fire": (pistol_fire, -17.0, 424),
-    "medgun_loop": (medgun_loop, -27.0, 425),
-    "reload_long": (reload_long, -23.0, 426),
-    # Planetstrike: explosions and impacts.
-    "explosion_small": (explosion_small, -15.0, 431),
-    "explosion_large": (explosion_large, -14.0, 432),
-    "impact_armor": (impact_armor, -17.0, 433),
-    "impact_ground": (impact_ground, -18.0, 434),
-    "bullet_whiz": (bullet_whiz, -20.0, 435),
     # Planetstrike: world and base.
-    "turret_wall_fire": (turret_wall_fire, -16.0, 441),
     "vehicle_spawn": (vehicle_spawn, -18.0, 442),
     "rearm_loop": (rearm_loop, -27.0, 443),
     "deploy": (deploy, -18.0, 444),
@@ -2026,12 +2455,73 @@ SOUNDS = {
     "spawn": (spawn, -19.0, 465),
     "hitmarker": (hitmarker, -21.0, 466),
     "kill_confirm": (kill_confirm, -20.0, 467),
+    # Planetstrike: weapons, impacts and explosions ("peak": the level of the loudest 100 ms).
+    "rifle_fire": (rifle_fire, -13.0, 501, "peak"),
+    "ember_fire": (ember_fire, -10.0, 502, "peak"),
+    "volt_fire": (volt_fire, -13.0, 503, "peak"),
+    "hive_fire": (hive_fire, -15.0, 504, "peak"),
+    "scatter_fire": (scatter_fire, -7.0, 505, "peak"),
+    "lance_crack": (lance_crack, -6.5, 506, "peak"),
+    "striker_fire": (striker_fire, -8.5, 507, "peak"),
+    "skyhook_fire": (skyhook_fire, -10.0, 508, "peak"),
+    "pistol_fire": (pistol_fire, -14.0, 509, "peak"),
+    "medgun_loop": (medgun_loop, -27.0, 510),
+    "repair_loop": (repair_loop, -27.0, 511),
+    "pounder_fire": (pounder_fire, -12.0, 512, "peak"),
+    "mauler_fire": (mauler_fire, -7.5, 513, "peak"),
+    "burster_fire": (burster_fire, -12.0, 514, "peak"),
+    "cannon_light": (cannon_light, -6.5, 515, "peak"),
+    "cannon_heavy": (cannon_heavy, -6.0, 516, "peak"),
+    "rail_fire": (rail_fire, -6.0, 517, "peak"),
+    "autocannon_fire": (autocannon_fire, -10.0, 518, "peak"),
+    "flak_fire": (flak_fire, -12.0, 519, "peak"),
+    "rocket_fire": (rocket_fire, -9.0, 520, "peak"),
+    "missile_fire": (missile_fire, -10.5, 521, "peak"),
+    "air_cannon": (air_cannon, -13.0, 522, "peak"),
+    "chaingun": (chaingun, -13.0, 523, "peak"),
+    "turret_wall_fire": (turret_wall_fire, -8.5, 524, "peak"),
+    "spitfire_fire": (spitfire_fire, -16.0, 525, "peak"),
+    "tail_small": (tail_small, -16.0, 526, "peak"),
+    "tail_medium": (tail_medium, -13.0, 527, "peak"),
+    "tail_heavy": (tail_heavy, -11.0, 528, "peak"),
+    "impact_body_1": (lambda: impact_body(0), -15.0, 531, "peak"),
+    "impact_body_2": (lambda: impact_body(1), -15.0, 532, "peak"),
+    "impact_shield": (impact_shield, -14.0, 533, "peak"),
+    "impact_armor_1": (lambda: impact_armor(0), -14.0, 534, "peak"),
+    "impact_armor_2": (lambda: impact_armor(1), -14.0, 535, "peak"),
+    "impact_ground_1": (lambda: impact_ground(0), -15.0, 536, "peak"),
+    "impact_ground_2": (lambda: impact_ground(1), -15.0, 537, "peak"),
+    "impact_ground_3": (lambda: impact_ground(2), -15.0, 538, "peak"),
+    "impact_metal_1": (lambda: impact_metal(0), -16.0, 539, "peak"),
+    "impact_metal_2": (lambda: impact_metal(1), -16.0, 540, "peak"),
+    "ricochet_1": (lambda: ricochet(0), -18.0, 541, "peak"),
+    "ricochet_2": (lambda: ricochet(1), -18.0, 542, "peak"),
+    "ricochet_3": (lambda: ricochet(2), -18.0, 543, "peak"),
+    "explosion_small": (explosion_small, -6.5, 551, "peak"),
+    "explosion_medium": (explosion_medium, -6.0, 552, "peak"),
+    "explosion_large": (explosion_large, -6.0, 553, "peak"),
+    "explosion_wreck": (explosion_wreck, -5.5, 554, "peak"),
+    "airburst": (airburst, -8.0, 555, "peak"),
+    "bullet_whiz_1": (lambda: bullet_whiz(0), -17.0, 561, "peak"),
+    "bullet_whiz_2": (lambda: bullet_whiz(1), -17.0, 562, "peak"),
+    "bullet_whiz_3": (lambda: bullet_whiz(2), -17.0, 563, "peak"),
+    "whiz_heavy": (whiz_heavy, -14.0, 564, "peak"),
+    "reload_rifle": (reload_rifle, -19.0, 571, "peak"),
+    "reload_scatter": (reload_scatter, -19.0, 572, "peak"),
+    "reload_lance": (reload_lance, -19.0, 573, "peak"),
+    "reload_launcher": (reload_launcher, -19.0, 574, "peak"),
+    "reload_pistol": (reload_pistol, -19.0, 575, "peak"),
+    "reload_heavy": (reload_heavy, -19.0, 576, "peak"),
+    "reload_done": (reload_done, -20.0, 577, "peak"),
+    "casing_1": (lambda: casing(0), -26.0, 581, "peak"),
+    "casing_2": (lambda: casing(1), -26.0, 582, "peak"),
+    "casing_shell": (casing_shell, -24.0, 583, "peak"),
 }
 
 # Sounds played as loops.
 LOOPS = {"shield_hum", "gate_hum", "charge_loop",
          "engine_light_tank", "engine_heavy_tank", "engine_bus", "engine_vtol", "tracks",
-         "medgun_loop", "rearm_loop", "warpgate_hum", "forcefield_buzz"}
+         "medgun_loop", "repair_loop", "rearm_loop", "warpgate_hum", "forcefield_buzz"}
 
 
 if __name__ == "__main__":
