@@ -582,6 +582,32 @@ impl World {
         best
     }
 
+    /// The lowest underside over (x, z) at or above `above`: static colliders' bottoms (a
+    /// roof, an upper floor), `None` under open sky.
+    pub fn ceiling(&self, x: f32, z: f32, above: f32) -> Option<f32> {
+        let mut idx = Vec::new();
+        let p = Vec2::new(x, z);
+        self.near(p, p, &mut idx);
+        idx.iter()
+            .map(|&i| &self.colliders[i as usize])
+            .filter(|c| c.over(x, z))
+            .map(|c| c.bounds().0.y)
+            .filter(|&y| y >= above)
+            .min_by(f32::total_cmp)
+    }
+
+    /// Whether a static collider stands in the way at (x, z) between the heights `lo` and
+    /// `hi`: one reaching down below `hi` with its top above `lo` (a wall, not a roof
+    /// overhead nor a kerb underfoot).
+    pub fn occupied(&self, x: f32, z: f32, lo: f32, hi: f32) -> bool {
+        let mut idx = Vec::new();
+        let p = Vec2::new(x, z);
+        self.near(p, p, &mut idx);
+        idx.iter()
+            .map(|&i| &self.colliders[i as usize])
+            .any(|c| c.bounds().0.y < hi && c.top_at(x, z).is_some_and(|top| top > lo))
+    }
+
     /// Moves a standing player (feet at `feet`) by `delta` in XZ, then applies gravity.
     /// Returns the new feet position and vertical speed.
     pub fn move_body(&self, feet: Vec3, delta: Vec2, vy: f32, dt: f32) -> (Vec3, f32) {
@@ -652,7 +678,17 @@ impl World {
             return (p, 0.0);
         }
         vy -= g * dt;
+        let was = p.y;
         p.y += vy * dt;
+        // Rising into a roof or an upper floor: the head stops under it (never exactly at
+        // rest in the air: `vy == 0` means standing).
+        if vy > 0.0
+            && let Some(c) = self.ceiling(p.x, p.z, was + BODY_HEIGHT - 0.05)
+            && p.y + BODY_HEIGHT > c
+        {
+            p.y = (c - BODY_HEIGHT - 0.01).max(was);
+            vy = -0.01;
+        }
         if p.y <= ground {
             p.y = ground;
             vy = 0.0;
@@ -852,6 +888,36 @@ mod tests {
         assert_eq!(w.ground(0.45, 0.0, 1.0), Some(0.25));
         // Off its corner (inside the bounding box) is the floor.
         assert_eq!(w.ground(0.5, 0.5, 1.0), Some(0.0));
+    }
+
+    #[test]
+    fn a_roof_stops_a_jump_without_a_shove() {
+        let roof = Collider::Box {
+            min: Vec3::new(-10.0, 2.6, -10.0),
+            max: Vec3::new(10.0, 3.6, 10.0),
+        };
+        let w = World::new(vec![ground_box(), roof], None);
+        assert_eq!(w.ceiling(0.0, 0.0, 1.0), Some(2.6));
+        assert_eq!(w.ceiling(0.0, 0.0, 3.0), None);
+        assert_eq!(w.ceiling(11.0, 0.0, 1.0), None);
+        let mut p = Vec3::new(0.5, 0.0, 0.5);
+        let mut vy = 6.0;
+        let mut top = 0.0f32;
+        for _ in 0..120 {
+            (p, vy) = w.move_body(p, Vec2::ZERO, vy, 1.0 / 60.0);
+            top = top.max(p.y);
+        }
+        assert!(top + BODY_HEIGHT <= 2.6 + 1e-3, "{top}");
+        assert!((p.x - 0.5).abs() < 1e-4 && (p.z - 0.5).abs() < 1e-4, "{p}");
+        assert!(p.y.abs() < 1e-3 && vy == 0.0, "{p} {vy}");
+        // A roof overhead isn't in the way; a wall is.
+        assert!(!w.occupied(0.0, 0.0, 0.6, 2.5));
+        let wall = Collider::Box {
+            min: Vec3::new(-1.0, -1.0, -0.1),
+            max: Vec3::new(1.0, 4.0, 0.1),
+        };
+        let w = World::new(vec![ground_box(), roof, wall], None);
+        assert!(w.occupied(0.0, 0.0, 0.6, 2.5));
     }
 
     #[test]

@@ -82,7 +82,8 @@ impl Nav {
                 height[k] = land.max(water);
                 wet[k] = water > land + 0.5;
                 // Something tall over the ground anywhere in it (sampled every 3 m: walls are
-                // 4 m thick): blocked.
+                // 4 m thick): blocked; but not a high roof overhead (a cave's), only what
+                // stands on the ground or tops out low (buildings' floors and roofs).
                 const AT: [f32; 5] = [-6.0, -3.0, 0.0, 3.0, 6.0];
                 let tall = AT
                     .iter()
@@ -91,8 +92,9 @@ impl Nav {
                         let p = c + o;
                         let g = t.surface(p.x, p.y);
                         world
-                            .ground(p.x, p.y, g + 40.0)
+                            .ground(p.x, p.y, g + 16.0)
                             .is_some_and(|top| top > g + 2.5)
+                            || world.occupied(p.x, p.y, g + 2.5, g + 2.5)
                     });
                 blocked[k] = tall;
             }

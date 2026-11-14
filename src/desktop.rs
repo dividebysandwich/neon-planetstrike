@@ -413,11 +413,8 @@ fn place_camera(
     }
     // Manning a turret, seen from behind: the gun aims at what the crosshair is on.
     if view.turret.is_some() {
-        let mut at = view.eye + rot * Vec3::new(0.0, 2.0, 8.0);
-        if let Some(g) = game.world.land(at.x, at.z) {
-            at.y = at.y.max(g + 1.0);
-        }
-        cam.translation = at;
+        let at = view.eye + rot * Vec3::new(0.0, 2.0, 8.0);
+        cam.translation = keep_clear(&game.world, view.eye, at);
         cam.rotation = rot;
         aim_at_crosshair(&game, &view, &cam, &mut local);
         return;
@@ -434,17 +431,14 @@ fn place_camera(
             // Chasing the craft, smoothed.
             look.cam_rot = look.cam_rot.slerp(vrot, (dt * 5.0).min(1.0));
             let back = look.cam_rot * Vec3::new(0.0, size * 0.55, size * 2.4);
-            cam.translation = pos + Vec3::Y * spec.half.y + back;
+            let pivot = pos + Vec3::Y * spec.half.y;
+            cam.translation = keep_clear(&game.world, pivot, pivot + back);
             cam.rotation = look.cam_rot * Quat::from_rotation_x(-0.12);
         } else {
             let pivot = pos + Vec3::Y * (spec.half.y * 2.0 + 1.0);
             let back = rot * Vec3::new(0.0, 0.0, size * 2.2 + 4.0);
-            let mut at = pivot + back + Vec3::Y * 1.5;
-            // Not into the ground.
-            if let Some(g) = game.world.land(at.x, at.z) {
-                at.y = at.y.max(g + 1.0);
-            }
-            cam.translation = at;
+            let at = pivot + back + Vec3::Y * 1.5;
+            cam.translation = keep_clear(&game.world, pivot, at);
             cam.rotation = rot;
             aim_at_crosshair(&game, &view, &cam, &mut local);
         }
@@ -455,6 +449,29 @@ fn place_camera(
         cam.translation = mover.body.feet + Vec3::Y * eye;
         cam.rotation = rot;
     }
+}
+
+/// A camera behind `pivot` at `at`, pulled in short of the land between them (a canyon's
+/// wall), under a roof (a cave's), and not into the ground.
+fn keep_clear(world: &ps_sim::collide::World, pivot: Vec3, at: Vec3) -> Vec3 {
+    let mut at = at;
+    if let Some(t) = &world.terrain
+        && let Some((_, p)) = t.ray(pivot, at)
+        && !world.in_hole(p.x, p.z)
+    {
+        let len = (at - pivot).length().max(1e-3);
+        let hit = (p - pivot).length();
+        at = pivot.lerp(at, ((hit - 0.4) / len).max(0.0));
+    }
+    if let Some(c) = world.ceiling(at.x, at.z, pivot.y.min(at.y))
+        && at.y > c - 0.5
+    {
+        at.y = (c - 0.5).max(pivot.y.min(c - 0.5));
+    }
+    if let Some(g) = world.land(at.x, at.z) {
+        at.y = at.y.max(g + 1.0);
+    }
+    at
 }
 
 /// Seen from behind, a gun aims from its pivot at what lies under the crosshair (the

@@ -702,6 +702,17 @@ impl Motion {
         p = ContinentMap::clamp(p);
         p.y = p.y.min(700.0);
         let mut hit = None;
+        // A roof overhead (a cave's): the craft stops under it.
+        let tall = spec.half.y * 2.0;
+        if let Some(c) = world.ceiling(p.x, p.z, self.pos.y + tall - 0.1)
+            && p.y + tall > c
+        {
+            if vel.y > 10.0 {
+                hit = Some(hit.unwrap_or(0.0f32).max(vel.y));
+            }
+            p.y = c - tall - 0.01;
+            vel.y = vel.y.min(0.0);
+        }
         // Obstacles (one circle for the fuselage; the wings ride over).
         let before = p;
         push_circle(world, &mut p, spec.half.x * 0.6, spec.half.y * 2.0);
@@ -906,6 +917,31 @@ mod tests {
         // Flying forward at speed holds its height (roughly) and goes north.
         assert!(m.pos.z < -100.0, "{}", m.pos);
         assert!((m.pos.y - h).abs() < 25.0, "{} vs {h}", m.pos.y);
+    }
+
+    #[test]
+    fn vtols_stop_under_a_roof() {
+        let w = World::new(
+            vec![
+                flat().colliders[0],
+                Collider::Box {
+                    min: Vec3::new(-100.0, 14.0, -100.0),
+                    max: Vec3::new(100.0, 18.0, 100.0),
+                },
+            ],
+            None,
+        );
+        let spec = VehicleKind::Vtol.spec();
+        let mut m = Motion::at(Vec3::ZERO, 0.0);
+        let up = DriveCmd {
+            lift: 1.0,
+            ..Default::default()
+        };
+        for _ in 0..600 {
+            m.step(&spec, Some(&up), false, &w, 1.0 / 60.0);
+            assert!(m.pos.y + spec.half.y * 2.0 <= 14.0 + 1e-3, "{}", m.pos);
+        }
+        assert!(m.pos.y > 5.0, "{}", m.pos);
     }
 
     #[test]
