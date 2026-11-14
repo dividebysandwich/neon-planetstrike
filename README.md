@@ -32,6 +32,16 @@ The start menu offers an **Offline world** (the server runs inside the game, wit
   and gates). Continents
   are 4 km islands, big enough for armour and aircraft. A day passes in 30 minutes; the neon
   glows through the night and the bases' lights come on.
+- One contested continent of every world is **Hollow Reach**, the canyon caves: a rock plateau
+  cut by steep canyons along the roads, roofed with rock in long stretches (glowing stalactites
+  under them, skylights between, the light dim beneath), every base and warp gate in a sinkhole
+  with a rocky overhang round its rim, open to the sky in the middle. Armour goes through the
+  canyons (the towers stand in pits with their own roads); aircraft come in through the
+  sinkholes and skylights, and stop under the roofs. Its bases are built of alien stuff: ribbed
+  walls and spires, crystal and carapace equipment. A **zipline** runs from each base's main
+  building's roof up to the rim: E within reach rides it the way you look (faster downhill),
+  puts you down at the far end, and jump (or E) lets go wherever you are. Riders shoot and are
+  shot as on foot.
 - Continents have a **center base** and five to eight outer bases joined by a **lattice**. The
   lattice also runs to the warp gates, so it spans the whole world from sanctuary to sanctuary.
   **Roads** follow it from base gateway to base gateway and into the warp gates, graded into
@@ -41,6 +51,14 @@ The start menu offers an **Offline world** (the server runs inside the game, wit
   the core room and solve the console's sliding puzzle: the hack runs for 5 minutes. The owners
   stop it by solving the console again. Holding a continent's center base captures the whole
   continent — every base on it flips — which opens the next continents to attack.
+- **Capture points**: a third of the outposts have no console but three **points**, A in the
+  front yard, B in the core room and C in the back of the yard, each a pylon with a ring round
+  it on the ground. Standing in a point not your faction's takes it over 24 s (faster with more
+  of you, up to two and a half times); a rival's progress there drains first, two factions in
+  it hold it as it is, and its holders alone in it drain the takers'. A faction that may attack
+  the base and holds two points runs a **capture** of 2.5 minutes that takes the base; the owners
+  stop it by taking a point back (a capture under way ends if the server restarts). Taking a
+  point earns XP, retaking one during a capture counts as a defence.
 - **Towers** stand near most bases: a capture point near the top (taken at once by solving
   its puzzle) and spawn tubes in a bunker below ground: a foothold for the attack.
 - Bots fight only on **contested** continents (bases of different factions, or a neighbour of
@@ -63,7 +81,10 @@ floors, has the **spawn room** behind a forcefield only the owners pass, **equip
 terminals**, **medical terminals**, offices and the **core room** with the console. A
 **generator** powers the forcefields, turrets and vehicle pad: destroy it to take them down,
 repair it to bring them back. In the yard: the **vehicle pad** with its terminal, the **rearm
-pad**, and the **resource silo**.
+pad**, and the **resource silo**. **Bars** float over what is fought over: the generator's and
+the turrets' health (near, or while damaged), each capture point's (its letter over it in its
+holder's colour, the bar filling in the taker's, flashing while contested) and a hack's or
+capture's progress over the console (or the base).
 
 **Resources**: turrets firing and vehicles ordered use up a base's resources. A base that runs
 dry goes neutral (white), and nobody spawns there until its silo is refilled and it is
@@ -103,11 +124,17 @@ the server restarts (`structures.ron` beside the world's state).
 
 ## Alerts, locks and population
 
-**Objective markers**: the consoles that matter on your continent are marked on screen with a
-word and the distance: **HACK** (amber: a base or tower your faction may hack), **DEFEND**
-(red: one of yours being hacked) and **HOLD** (green: one your faction is hacking; keep the
-enemy off its console). Out of view they sit at the screen's edge on the side they're on; in VR
-they float over the consoles, seen through walls. The nearest six show.
+**Objective markers**: what matters on your continent is marked on screen with a word and the
+distance. The consoles (a diamond): **HACK** (amber: a base or tower your faction may hack),
+**DEFEND** (red: one of yours being hacked) and **HOLD** (green: one your faction is hacking;
+keep the enemy off its console). The capture points (a circle, with the point's letter):
+**CAPTURE** (one not yours at a base you may take), **DEFEND** (one of your base's taken or
+being taken) and **HOLD** (one you hold while your capture runs). Near you (a square): the
+generators and turrets to **DESTROY** at a base you may take, and your own to **REPAIR** when
+damaged. Out of view they sit at the screen's edge on the side they're on; in VR they float
+over them, seen through walls. Ten show: the nearest consoles and points, and a few of the
+nearest generators and turrets. The map and minimap show who holds each capture point, and
+the HUD line of the base you're in (A:R B:B C:R, and the capture's time).
 
 - **Alerts**: every half hour (the first ten minutes in) the busiest contested continent gets
   a 15-minute **alert**: whichever faction holds the most of its bases (outposts and the
@@ -248,7 +275,7 @@ Nobody can fire inside a warp gate's bubble, and no shot goes through it.
 | Shift, Ctrl, Space | sprint, crouch, jump (VTOL: hover down / up) |
 | Left / right mouse | fire / aim (the lance's scope) |
 | R, G, 1, 2, 3 | reload, grenade, rifle, sidearm, special |
-| E | use: enter or leave vehicles, terminals, consoles |
+| E | use: enter or leave vehicles, terminals, consoles; ride a zipline, let go |
 | B, F, V | deploy the bus (aircraft: flares), change seat, vehicle camera |
 | M | map: the world and the continent |
 | P, T | squad panel, squad waypoint (the leader) |
@@ -326,7 +353,7 @@ the seed of its saved world.
 
 | Crate | |
 |---|---|
-| `crates/ps-sim` | The game without a renderer: world generation (`worldgen.rs`), terrain and themes, roads (`roads.rs`), scenery, bases, the continent simulation (`sim.rs`: players, vehicles, turrets, projectiles with lag compensation, consoles), vehicles' physics, world state and capture rules (`state.rs`), bots |
+| `crates/ps-sim` | The game without a renderer: world generation (`worldgen.rs`), terrain and themes, roads (`roads.rs`), the canyon caves (`caves.rs`) and ziplines (`zip.rs`), scenery, bases, the continent simulation (`sim.rs`: players, vehicles, turrets, projectiles with lag compensation, consoles), capture points (`capture.rs`: each continent steps its points and tells the server who holds two; the server runs the capture like a hack), vehicles' physics, world state and capture rules (`state.rs`), bots |
 | `crates/ps-net` | UDP transport (reliable and unreliable channels), the protocol (postcard, quantized snapshots), the client, LAN discovery, master server reporting, the browser's WebSocket |
 | `crates/ps-server` | The server: a hub thread (network, world state, transfers, warps, bot quotas, persistence) and **one thread per continent**, with scoped threads building that continent's snapshots |
 | `crates/ps-master` | The server list and the browser's WebSocket-to-UDP relay |
