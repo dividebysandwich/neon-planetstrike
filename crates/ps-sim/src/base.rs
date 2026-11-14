@@ -1984,4 +1984,85 @@ mod tests {
             );
         }
     }
+
+    /// A fingerprint of a layout's solid parts and fixtures.
+    fn fingerprint(l: &BaseLayout) -> u64 {
+        let mut h = 0xcbf29ce484222325u64;
+        let mut eat = |v: f32| {
+            // (Rounded to the millimetre.)
+            for b in ((v * 1000.0).round() as i64).to_le_bytes() {
+                h = (h ^ b as u64).wrapping_mul(0x100000001b3);
+            }
+        };
+        for c in &l.colliders {
+            let (a, b) = c.bounds();
+            for v in [a, b] {
+                eat(v.x);
+                eat(v.y);
+                eat(v.z);
+            }
+            if let Collider::Ramp { dir, .. } = c {
+                eat(*dir as f32);
+            }
+        }
+        for t in &l.terminals {
+            eat(t.pos.x);
+            eat(t.pos.y);
+            eat(t.pos.z);
+            eat(t.yaw);
+        }
+        for (s, yaw) in &l.spawns {
+            eat(s.x);
+            eat(s.y);
+            eat(s.z);
+            eat(*yaw);
+        }
+        h
+    }
+
+    #[test]
+    fn layouts_are_the_same_every_time() {
+        // Clients build the bases from the seed: the same layout for the same site and seed,
+        // here and after any change that isn't meant to move a thing (the fingerprints).
+        let mut got = Vec::new();
+        for (kind, facing) in [
+            (BaseKind::Outpost, 0.0),
+            (BaseKind::Center, 1.6),
+            (BaseKind::Home, 3.1),
+            (BaseKind::Tower, -1.5),
+        ] {
+            for seed in 0..4 {
+                let site = BaseSite {
+                    name: "t".into(),
+                    kind,
+                    pos: Vec2::new(100.0, -50.0),
+                    facing,
+                    capture: Capture::Console,
+                };
+                let a = fingerprint(&layout(&site, 10.0, seed));
+                assert_eq!(a, fingerprint(&layout(&site, 10.0, seed)));
+                got.push(a);
+            }
+        }
+        assert_eq!(got, GOLDEN, "{got:#x?}");
+    }
+
+    const GOLDEN: [u64; 16] = [
+        0x338b152e3677b8a6,
+        0xfc04f2994d3bd66b,
+        0xdbc9c14bb2a78a81,
+        0x4519062d9512e140,
+        0x58eea4fb5931979c,
+        0x234133e24aab2288,
+        0xce5bf4bcf896b3f1,
+        0xc9f3df3e601fb93d,
+        0x3abb033112895c1,
+        0x57b36436df20a081,
+        0xb93f46476fa111b6,
+        0xfef91209970f0762,
+        0x32315e7d655bf02c,
+        0x32315e7d655bf02c,
+        0x32315e7d655bf02c,
+        0x32315e7d655bf02c,
+    ];
 }
