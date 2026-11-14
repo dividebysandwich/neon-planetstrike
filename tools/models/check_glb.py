@@ -414,9 +414,14 @@ def _hull(hx, hy, hz, slack=0.1):
     return ((-hx - slack, -0.001, -hz - slack), (hx + slack, 2 * hy + slack, hz + slack))
 
 
+# The plain surfaces any model may use besides `body` (README.md, Materials).
+SURFACES = {"armor", "paint", "metal", "rubber", "glass", "heat", "polymer"}
+
 PARTS = {
     "vehicles.glb": {
-        "allowed": {"body", "accent", "glow", "glow_white", "halo_white", "flow"},
+        "allowed": {"body", "accent", "glow", "glow_white", "halo_white", "flow", "tread"} | SURFACES,
+        # Each material of a mesh is an entity and a draw call of its own.
+        "max_materials": 9,
         "required": ("body", "accent", "glow", "glow_white", "halo_white", "flow"),
         "meshes": {
             "light_tank_hull": (4000,) + _hull(1.6, 1.25, 2.8) + ({1: 0.0},),
@@ -531,7 +536,8 @@ PARTS = {
         "nodes": {},
     },
     "weapons.glb": {
-        "allowed": {"body", "accent", "glow", "glow_white", "halo_white"},
+        "allowed": {"body", "accent", "glow", "glow_white", "halo_white"} | SURFACES,
+        "max_materials": 8,
         "required": ("body", "accent", "glow_white"),
         "meshes": {
             "rifle": (2000, (-0.05, -0.1, -0.45), (0.05, 0.2, 0.3), {2: -0.43}),
@@ -571,6 +577,10 @@ def check_parts(ck, file, spec):
     for r in spec["required"]:
         if r not in used:
             ck.err("%s: material %r not used" % (file, r))
+    for m in gltf["meshes"]:
+        n = len({p.get("material") for p in m["primitives"]})
+        if n > spec.get("max_materials", 99):
+            ck.err("%s/%s: %d materials (at most %d)" % (file, m["name"], n, spec["max_materials"]))
     extra = set(meshes) - set(spec["meshes"])
     if extra:
         ck.err("%s: unexpected meshes %s" % (file, sorted(extra)))

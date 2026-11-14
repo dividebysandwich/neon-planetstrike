@@ -12,9 +12,9 @@ use ps_sim::vehicle::VehicleKind;
 use ps_sim::{Team, VehicleId};
 
 use crate::assets::{Model, Models};
-use crate::bases::{Lamp, spawn_parts};
+use crate::bases::{Lamp, spawn_plated};
 use crate::game::{DrawSet, Game, Mover, alpha};
-use crate::hull::{HullMaterial, follow, vehicle_hull};
+use crate::hull::{HullMaterial, follow, vehicle_armor, vehicle_hull};
 use crate::materials::{GlowMaterial, NeonUniform, Palette, team_color};
 
 struct VehicleView {
@@ -27,7 +27,8 @@ struct VehicleView {
     bubble: Entity,
     team: Team,
     spin: f32,
-    hull: Handle<HullMaterial>,
+    /// Its plating: the dark body's and the armour plates'.
+    hull: [Handle<HullMaterial>; 2],
     beam: Option<Entity>,
 }
 
@@ -98,10 +99,21 @@ fn spawn_vehicle(
     hulls: &mut Assets<HullMaterial>,
 ) -> VehicleView {
     let team = Some(v.team);
-    let hull_mat = hulls.add(vehicle_hull(team_color(team) * 0.6));
+    let hull_mat = [
+        hulls.add(vehicle_hull(team_color(team) * 0.6)),
+        hulls.add(vehicle_armor(team_color(team))),
+    ];
     let spawn_model =
         |commands: &mut Commands, e: Entity, m: &Model, palette: &Palette, team: Option<Team>| {
-            spawn_parts(commands, e, m, palette, team, None, Some(&hull_mat));
+            spawn_plated(
+                commands,
+                e,
+                m,
+                palette,
+                team,
+                None,
+                Some((&hull_mat[0], &hull_mat[1])),
+            );
         };
     let spec = v.kind.spec();
     let p = prefix(v.kind);
@@ -420,11 +432,11 @@ fn sync(
                 *vv = want;
             }
         }
-        if let Some(mut m) = hulls.get_mut(&v.hull) {
-            follow(
-                &mut m,
-                &GlobalTransform::from(Transform::from_translation(pos).with_rotation(rot)),
-            );
+        let at = GlobalTransform::from(Transform::from_translation(pos).with_rotation(rot));
+        for h in &v.hull {
+            if let Some(mut m) = hulls.get_mut(h) {
+                follow(&mut m, &at);
+            }
         }
         // The harvester's beam, to the node it mines.
         if let Some(beam) = v.beam {

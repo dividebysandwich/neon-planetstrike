@@ -514,11 +514,44 @@ pub fn spawn_parts(
     tint: Option<BaseIdx>,
     hull: Option<&Handle<HullMaterial>>,
 ) {
+    spawn_plated(
+        commands,
+        parent,
+        model,
+        palette,
+        team,
+        tint,
+        hull.map(|h| (h, h)),
+    );
+}
+
+/// As `spawn_parts`, with plating of its own for the armour plates: `hull` is (body, armor).
+pub fn spawn_plated(
+    commands: &mut Commands,
+    parent: Entity,
+    model: &Model,
+    palette: &Palette,
+    team: Option<Team>,
+    tint: Option<BaseIdx>,
+    hull: Option<(&Handle<HullMaterial>, &Handle<HullMaterial>)>,
+) {
     for (mat, mesh) in &model.parts {
         let mut e = commands.spawn((Mesh3d(mesh.clone()), Transform::IDENTITY, ChildOf(parent)));
+        match (mat.as_str(), hull) {
+            ("armor", Some((_, armor))) => {
+                e.insert(MeshMaterial3d(armor.clone()));
+                continue;
+            }
+            (name, _) => {
+                if let Some(m) = palette.surface(name, team) {
+                    e.insert(MeshMaterial3d(m));
+                    continue;
+                }
+            }
+        }
         match mat.as_str() {
             "body" | "sclera" | "fur_light" => match hull {
-                Some(h) => {
+                Some((h, _)) => {
                     e.insert(MeshMaterial3d(h.clone()));
                 }
                 None => {
@@ -537,7 +570,7 @@ pub fn spawn_parts(
             "glow_white" | "muzzle" | "lamp" => {
                 e.insert(MeshMaterial3d::<AccentMaterial>(palette.accent_for(None)));
             }
-            "flow" => {
+            "flow" | "tread" => {
                 e.insert(MeshMaterial3d::<AccentMaterial>(palette.flow_for(team)));
             }
             _ => {

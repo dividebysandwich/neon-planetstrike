@@ -945,9 +945,9 @@ impl Renderer {
             gl.uniform_1_i32(p.kind.as_ref(), item.kind);
             if item.kind != super::extract::LIT_PLAIN {
                 gl.uniform_matrix_4_f32_slice(p.frame.as_ref(), false, &item.frame.to_cols_array());
-                let d: Vec<f32> = item.detail.iter().flat_map(|v| v.to_array()).collect();
-                gl.uniform_4_f32_slice(p.detail.as_ref(), &d);
             }
+            let d: Vec<f32> = item.detail.iter().flat_map(|v| v.to_array()).collect();
+            gl.uniform_4_f32_slice(p.detail.as_ref(), &d);
             if item.double_sided {
                 gl.disable(glow::CULL_FACE);
             }

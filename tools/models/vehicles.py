@@ -60,11 +60,13 @@ import ltlib as L  # noqa: E402
 import pslib as P  # noqa: E402
 from pslib import LIGHT, X, Y, Z, NX, NY, NZ  # noqa: E402
 
-PARTS = []  # (name, geo)
+PARTS = []  # (name, geo, smooth)
 
 
-def part(name, g):
-    PARTS.append((name, g))
+def part(name, g, smooth=None):
+    """A mesh of the file; `smooth` shades it smoothly across edges bending less than that
+    many degrees (round parts: wheels, barrels, canopies), flat otherwise."""
+    PARTS.append((name, g, smooth))
 
 
 # ---------------------------------------------------------------------------------------------
@@ -947,10 +949,10 @@ def main():
     rover()
     interceptor()
     dropship()
-    for name, g in PARTS:
+    for name, g, smooth in PARTS:
         if g.tris() > LIMIT:
             raise SystemExit("%s: %d tris (limit %d)" % (name, g.tris(), LIMIT))
-        L.make_object(name, g)
+        L.make_object(name, g, smooth=smooth)
         print("vehicle %-22s %5d tris" % (name, g.tris()))
     for name, pos in L_MUZZLES + [("vtol_muzzle_l", (-2.6, 0.8, -3.0)),
                                   ("vtol_muzzle_r", (2.6, 0.8, -3.0)),

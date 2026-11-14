@@ -112,6 +112,10 @@ pub fn spawn_model(
     let mut hits = Vec::new();
     for (mat, mesh) in &model.parts {
         let mut e = commands.spawn((Mesh3d(mesh.clone()), Transform::IDENTITY, ChildOf(parent)));
+        if let Some(m) = palette.surface(mat, team) {
+            e.insert(MeshMaterial3d(m));
+            continue;
+        }
         match mat.as_str() {
             "body" => {
                 e.insert(MeshMaterial3d(palette.avatar.clone()));

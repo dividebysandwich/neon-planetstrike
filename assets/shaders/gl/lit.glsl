@@ -17,7 +17,8 @@ uniform vec3 u_ambient;
 uniform vec4 u_point_pos[16];
 uniform vec3 u_point_colour[16];
 uniform int u_point_count;
-// The surface's detail (src/glvr/extract.rs LitItem): 0 plain, 1 hull plating (hull.wgsl:
+// The surface's detail (src/glvr/extract.rs LitItem): 0 plain (u_detail[0] metal, roughness,
+// [1] what it emits), 1 hull plating (hull.wgsl:
 // u_frame world to object, u_detail[0] params, [1] seam light), 2 land (terrain.wgsl:
 // contour, grid, params, shore; its roads from the vertex colour's alpha).
 uniform int u_kind;
@@ -120,7 +121,11 @@ void main() {
     vec3 base = v_colour.a > 0.0 ? u_base.rgb * v_colour.rgb : u_base.rgb;
     vec3 glow = vec3(0.0);
     float shine = 1.0;
-    if (u_kind == 1) {
+    if (u_kind == 0) {
+        // Plain surfaces: metal and gloss by their highlight alone, and their own light.
+        shine = mix(1.0, 3.0, u_detail[0].x) * mix(1.5, 0.3, u_detail[0].y);
+        glow = u_detail[1].rgb;
+    } else if (u_kind == 1) {
         // Plating (hull.wgsl).
         vec3 p = (u_frame * vec4(v_world, 1.0)).xyz;
         vec3 on = abs(normalize(mat3(u_frame) * n));

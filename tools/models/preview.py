@@ -160,6 +160,14 @@ for m in bpy.data.materials:
         emissive(m, hitcols[m.name], 6.0)
     elif m.name == "muzzle":
         emissive(m, (1, 1, 1), 8.0)
+    elif m.name == "tread":
+        emissive(m, team, 3.0, pulses=True)
+    elif m.name in ("paint", "armor"):
+        # The team's colour, dulled (paint) or as a breath on grey plate (armor).
+        k = 0.32 if m.name == "paint" else 0.07
+        g = 0.012 if m.name == "paint" else 0.12
+        bsdf = next(n for n in m.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+        bsdf.inputs["Base Color"].default_value = (*(g + k * c for c in team), 1.0)
 
 world = bpy.data.worlds.new("w")
 world.color = (0.005, 0.006, 0.01)

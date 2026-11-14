@@ -381,7 +381,13 @@ impl Extractor {
                 double_sided: m.double_sided || m.cull_mode.is_none(),
                 kind: LIT_PLAIN,
                 frame: Mat4::IDENTITY,
-                detail: [Vec4::ZERO; 4],
+                // The surface's metal and roughness (its shine) and what it emits.
+                detail: [
+                    Vec4::new(m.metallic, m.perceptual_roughness, 1.0, 0.0),
+                    Vec4::from_array(m.emissive.to_f32_array()),
+                    Vec4::ZERO,
+                    Vec4::ZERO,
+                ],
             });
         }
         let hulls = world.resource::<Assets<crate::hull::HullMaterial>>();

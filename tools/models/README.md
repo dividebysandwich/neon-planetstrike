@@ -145,7 +145,23 @@ frames, PREVIEW_LIDS=-5,-5 shuts them).
 Materials in all four files: `body`, `accent` (team neon) with `glow` halos, `glow_white` /
 `halo_white` (white light, not team coloured), `flow` (thin lines, UV U = metres along the line,
 for the game's pulses); props also `resource` (the resource crystals, coloured amber by the
-game). Every object sits at the origin with an identity transform; the empties
+game). Plain surfaces besides `body`, each with a look of its own in the game
+(`src/materials.rs` `Palette::surface`; on vehicles `body` and `armor` are plated,
+`src/hull.rs`):
+
+| name | for | look in the game |
+|---|---|---|
+| `armor` | armour plates | mid grey with a breath of the team's colour, large panels |
+| `paint` | stripes, door panels, chevrons | the team's colour, dulled, not lit |
+| `metal` | barrels, pistons, links, bolts | bare gunmetal, glossy |
+| `rubber` | tyres, track pads, hoses, grips | near black, matt |
+| `glass` | canopies, visors, lenses | dark, opaque, mirror glossy |
+| `heat` | exhausts, muzzle brakes | scorched metal with a faint ember glow |
+| `polymer` | weapon furniture, undersuits | dark, satin |
+| `tread` | a track's running surface (vehicles only) | lit like `flow`, at the vehicle's speed |
+
+Each material of a mesh is an entity and a draw call of its own: `check_glb.py` caps them per
+mesh (`max_materials`). Every object sits at the origin with an identity transform; the empties
 are exported as nodes. `check_glb.py` (`PARTS`) holds each mesh's triangle budget and box.
 
 - **Vehicles** (`vehicles.glb`). Hull frame: origin at the hull's bottom middle (ground

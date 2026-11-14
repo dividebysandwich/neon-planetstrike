@@ -433,6 +433,25 @@ def standard_materials():
         "accent": material("accent", base=(1, 1, 1), rough=0.4, emit=(1, 1, 1), strength=3.0),
         "glow": material("glow", base=(1, 1, 1), rough=1.0, emit=(1, 1, 1), strength=1.0,
                          alpha=0.35),
+        **surface_materials(),
+    }
+
+
+# The plain surfaces besides `body` (README.md, Materials): the game gives each its own look
+# (src/materials.rs Palette::surface); the values here are for look-dev renders only.
+SURFACES = ("armor", "paint", "metal", "rubber", "glass", "heat", "polymer")
+
+
+def surface_materials():
+    return {
+        "armor": material("armor", base=(0.15, 0.155, 0.165), rough=0.5, metal=0.35),
+        "paint": material("paint", base=(0.3, 0.3, 0.3), rough=0.55, metal=0.15),
+        "metal": material("metal", base=(0.3, 0.31, 0.33), rough=0.32, metal=0.9),
+        "rubber": material("rubber", base=(0.012, 0.012, 0.012), rough=0.95),
+        "glass": material("glass", base=(0.02, 0.05, 0.08), rough=0.06, metal=0.9),
+        "heat": material("heat", base=(0.1, 0.06, 0.04), rough=0.4, metal=0.8,
+                         emit=(1.0, 0.25, 0.04), strength=0.25),
+        "polymer": material("polymer", base=(0.035, 0.036, 0.04), rough=0.75),
     }
 
 

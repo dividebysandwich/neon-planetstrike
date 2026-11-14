@@ -579,6 +579,10 @@ def max_shell():
     return g
 
 
+# Meshes shaded smoothly across edges bending less than this many degrees (the rest flat).
+SMOOTH = {}
+
+
 def main():
     L.reset_scene()
     P.materials()
@@ -590,7 +594,7 @@ def main():
         g = fn()
         if g.tris() > LIMIT:
             raise SystemExit("%s: %d tris (limit %d)" % (name, g.tris(), LIMIT))
-        L.make_object(name, g)
+        L.make_object(name, g, smooth=SMOOTH.get(name))
         zs = [p[2] for p in g.positions()]
         print("weapon %-8s %5d tris, z %.3f .. %.3f (%.2f m)" % (name, g.tris(), min(zs),
                                                                   max(zs), max(zs) - min(zs)))

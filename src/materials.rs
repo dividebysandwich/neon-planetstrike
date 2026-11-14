@@ -342,9 +342,34 @@ pub struct Palette {
     /// Avatars: eyes (bright) and flowing stripes.
     pub eyes: [Handle<AccentMaterial>; 4],
     pub flow: [Handle<AccentMaterial>; 4],
+    /// The models' plain surfaces (tools/models/README.md, Materials): painted armour plate
+    /// and team paint by colour, then bare metal, rubber, dark glass, heat-stained metal and
+    /// polymer.
+    pub armor: [Handle<StandardMaterial>; 4],
+    pub paint: [Handle<StandardMaterial>; 4],
+    pub metal: Handle<StandardMaterial>,
+    pub rubber: Handle<StandardMaterial>,
+    pub glass: Handle<StandardMaterial>,
+    pub heat: Handle<StandardMaterial>,
+    pub polymer: Handle<StandardMaterial>,
 }
 
 impl Palette {
+    /// The plain surface a model's material `name` stands for, if it is one of them.
+    pub fn surface(&self, name: &str, team: Option<Team>) -> Option<Handle<StandardMaterial>> {
+        let i = team.map_or(3, |t| t.index());
+        Some(match name {
+            "armor" => self.armor[i].clone(),
+            "paint" => self.paint[i].clone(),
+            "metal" => self.metal.clone(),
+            "rubber" => self.rubber.clone(),
+            "glass" => self.glass.clone(),
+            "heat" => self.heat.clone(),
+            "polymer" => self.polymer.clone(),
+            _ => return None,
+        })
+    }
+
     pub fn accent_for(&self, team: Option<Team>) -> Handle<AccentMaterial> {
         self.accent[team.map_or(3, |t| t.index())].clone()
     }
@@ -526,7 +551,59 @@ fn make_palette(
     });
     let fixed = |c: Vec3, i: f32| NeonUniform::fixed(c, i);
     let colors = [RED, BLUE, GREEN, WHITE];
+    let plain = |std: &mut Assets<StandardMaterial>, c: Vec3, rough: f32, metal: f32| {
+        std.add(StandardMaterial {
+            base_color: Color::linear_rgb(c.x, c.y, c.z),
+            perceptual_roughness: rough,
+            metallic: metal,
+            reflectance: 0.45,
+            ..default()
+        })
+    };
+    // Armour plate: a mid grey with a breath of the team's colour; paint: the colour itself,
+    // dulled (the neutral ones a pale grey).
+    let grey = Vec3::new(0.15, 0.155, 0.165);
+    let armor = colors.map(|c| {
+        let tint = if c == WHITE {
+            grey
+        } else {
+            grey.lerp(c * 0.3, 0.22)
+        };
+        plain(&mut std, tint, 0.5, 0.35)
+    });
+    let paint = colors.map(|c| {
+        let tint = if c == WHITE {
+            Vec3::splat(0.3)
+        } else {
+            c * 0.32 + Vec3::splat(0.012)
+        };
+        plain(&mut std, tint, 0.55, 0.15)
+    });
+    let metal = plain(&mut std, Vec3::new(0.3, 0.31, 0.33), 0.32, 0.9);
+    let rubber = plain(&mut std, Vec3::splat(0.012), 0.95, 0.0);
+    let polymer = plain(&mut std, Vec3::new(0.035, 0.036, 0.04), 0.75, 0.0);
+    let glass = std.add(StandardMaterial {
+        base_color: Color::linear_rgb(0.02, 0.05, 0.08),
+        perceptual_roughness: 0.06,
+        metallic: 0.9,
+        reflectance: 0.8,
+        ..default()
+    });
+    let heat = std.add(StandardMaterial {
+        base_color: Color::linear_rgb(0.1, 0.06, 0.04),
+        emissive: LinearRgba::new(0.25, 0.06, 0.01, 1.0),
+        perceptual_roughness: 0.4,
+        metallic: 0.8,
+        ..default()
+    });
     commands.insert_resource(Palette {
+        armor,
+        paint,
+        metal,
+        rubber,
+        glass,
+        heat,
+        polymer,
         body,
         suit,
         avatar,

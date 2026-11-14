@@ -69,6 +69,14 @@ pub fn vehicle_hull(glow: Vec3) -> HullMaterial {
     m
 }
 
+/// A vehicle's armour plates: lighter, larger panels in a breath of `team`'s colour.
+pub fn vehicle_armor(team: Vec3) -> HullMaterial {
+    let c = Vec3::new(0.17, 0.175, 0.185).lerp(team * 0.3, 0.2);
+    let mut m = hull(Color::linear_rgb(c.x, c.y, c.z), 1.6, 0.52, 0.35);
+    m.extension.hull.params = Vec4::new(1.6, 0.45, 0.8, 0.5);
+    m
+}
+
 /// Follows the object at `t`: the material's frame turns world positions into its own.
 pub fn follow(m: &mut HullMaterial, t: &GlobalTransform) {
     m.extension.hull.frame = t.to_matrix().inverse();
