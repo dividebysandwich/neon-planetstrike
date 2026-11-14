@@ -60,12 +60,43 @@ struct Particle {
 #[derive(Component)]
 struct Billboard(f32);
 
+/// A streak (`PARTICLE_STREAK`): a quad lying along `dir`, its bright end that way, turned
+/// about it to the viewer; `long` times as long as it is wide. One that `flies` lies along
+/// its particle's flight.
+#[derive(Component)]
+struct Streak {
+    dir: Vec3,
+    long: f32,
+    flies: bool,
+}
+
+/// What goes with a projectile (its light, its engine's glow), `back` metres behind it, and
+/// goes when it does. (`blink`: a grenade's light, of this size, flickering.)
+#[derive(Component)]
+struct Follow {
+    target: Entity,
+    back: f32,
+    blink: Option<f32>,
+}
+
+/// A projectile's trail: a puff of smoke every so many metres flown (`left` more at most).
+#[derive(Component)]
+struct Trail {
+    every: f32,
+    flown: f32,
+    left: u16,
+    size: f32,
+    life: f32,
+}
+
 /// A particle fading through materials: smoke (`FxAssets::puff`) or fire (`FxAssets::flame`).
 #[derive(Component, Clone, Copy, PartialEq)]
 enum Fade {
     Smoke,
     Dust,
     Fire,
+    /// A trail's or a muzzle's thin grey smoke.
+    Wisp,
 }
 
 const FADE_STEPS: usize = 6;
@@ -92,6 +123,12 @@ struct FxAssets {
     hot: Handle<GlowMaterial>,
     flash: Handle<ParticleMaterial>,
     shield: Handle<ParticleMaterial>,
+    /// Streaks in each faction's colour (tracers' light, a flash's spikes) and white hot.
+    streak: [Handle<ParticleMaterial>; 4],
+    hot_streak: Handle<ParticleMaterial>,
+    /// A rocket's engine.
+    engine: Handle<ParticleMaterial>,
+    wisp: [Handle<ParticleMaterial>; FADE_STEPS],
 }
 
 /// How dear a particle is when there are many (`FxBudget`): the heart of an effect (a flash,
@@ -163,6 +200,7 @@ struct Ctx<'a, 'w, 's> {
     commands: &'a mut Commands<'w, 's>,
     fx: &'a FxAssets,
     budget: &'a mut FxBudget,
+    game: &'a Game,
 }
 
 /// The local player's guns, as this client reckons them (for firing at once).
@@ -222,6 +260,7 @@ impl Plugin for FxPlugin {
                     local_fire,
                     receive,
                     fly,
+                    follow,
                     blasts,
                     particles,
                     face_viewer,
@@ -263,6 +302,9 @@ fn make_assets(
     });
     let muzzle = [Some(Team::Red), Some(Team::Blue), Some(Team::Green), None]
         .map(|t| parts.add(ParticleMaterial::glow(team_color(t) * 4.0, 1.0)));
+    let streak = [Some(Team::Red), Some(Team::Blue), Some(Team::Green), None]
+        .map(|t| parts.add(ParticleMaterial::streak(team_color(t) * 6.0, 1.0)));
+    let wisp = smoke_of(Vec3::new(0.2, 0.2, 0.22), 0.6, &mut parts);
     commands.insert_resource(FxAssets {
         tracer: meshes.add(Cuboid::new(0.05, 0.05, 1.6)),
         shell: meshes.add(Sphere::new(0.18).mesh().ico(1).unwrap()),
@@ -286,6 +328,16 @@ fn make_assets(
         }),
         flash: parts.add(ParticleMaterial::glow(Vec3::new(1.0, 0.8, 0.5) * 4.0, 1.0)),
         shield: parts.add(ParticleMaterial::glow(Vec3::new(0.4, 0.8, 1.0) * 2.5, 0.8)),
+        streak,
+        hot_streak: parts.add(ParticleMaterial::streak(
+            Vec3::new(1.0, 0.7, 0.35) * 5.0,
+            1.0,
+        )),
+        engine: parts.add(ParticleMaterial::glow(
+            Vec3::new(1.0, 0.55, 0.15) * 4.0,
+            1.0,
+        )),
+        wisp,
     });
 }
 
@@ -298,6 +350,29 @@ fn team_of(game: &Game, id: PlayerId) -> Option<Team> {
         .or_else(|| game.names.get(&id).map(|n| n.1))
 }
 
+/// What a projectile looks like flying.
+#[derive(Clone, Copy, PartialEq)]
+enum Flight {
+    /// A bolt: a tracer and its light.
+    Bolt,
+    /// A shell: a hot ball leaving a thin wake.
+    Shell,
+    /// A rocket or missile: its engine's glow and a trail of smoke.
+    Rocket,
+    Grenade,
+}
+
+fn flight_of(ammo: Ammo) -> Flight {
+    match ammo {
+        Ammo::Grenade | Ammo::Utility(_) => Flight::Grenade,
+        Ammo::LightShell | Ammo::HeavyShell | Ammo::Gun(Weapon::Mauler) => Flight::Shell,
+        Ammo::Rocket | Ammo::Missile | Ammo::Gun(Weapon::Skyhook) | Ammo::Gun(Weapon::Striker) => {
+            Flight::Rocket
+        }
+        _ => Flight::Bolt,
+    }
+}
+
 fn spawn_projectile(
     c: &mut Ctx,
     id: u32,
@@ -308,56 +383,459 @@ fn spawn_projectile(
 ) -> Entity {
     let b = ammo.ballistics();
     let (commands, fx) = (&mut *c.commands, c.fx);
-    let mesh = match ammo {
-        Ammo::Grenade | Ammo::Utility(_) => fx.grenade.clone(),
-        Ammo::LightShell
-        | Ammo::HeavyShell
-        | Ammo::Rocket
-        | Ammo::Missile
-        | Ammo::Gun(Weapon::Skyhook)
-        | Ammo::Gun(Weapon::Striker) => fx.shell.clone(),
-        _ => fx.tracer.clone(),
+    let flight = flight_of(ammo);
+    let mesh = match flight {
+        Flight::Grenade => fx.grenade.clone(),
+        Flight::Shell | Flight::Rocket => fx.shell.clone(),
+        Flight::Bolt => fx.tracer.clone(),
     };
-    let mat = fx.spark[team.map_or(3, |t| t.index())].clone();
+    let ti = team.map_or(3, |t| t.index());
+    let mat = fx.spark[ti].clone();
     // (Bolts stretched with their speed; a grenade a ball.)
     let len = if b.bounces {
         1.0
     } else {
         (vel.length() / 140.0).clamp(0.4, 4.0)
     };
-    commands
-        .spawn((
-            Projectile {
-                id,
-                ammo,
-                vel,
-                gravity: b.gravity,
-                left: b.life,
-            },
-            Mesh3d(mesh),
-            MeshMaterial3d(mat),
-            Transform::from_translation(from)
-                .looking_to(vel.normalize_or(Vec3::NEG_Z), Vec3::Y)
-                .with_scale(Vec3::new(1.0, 1.0, len)),
-        ))
-        .id()
+    let dir = vel.normalize_or(Vec3::NEG_Z);
+    let mut e = commands.spawn((
+        Projectile {
+            id,
+            ammo,
+            vel,
+            gravity: b.gravity,
+            left: b.life,
+        },
+        Mesh3d(mesh),
+        MeshMaterial3d(mat),
+        Transform::from_translation(from)
+            .looking_to(dir, Vec3::Y)
+            .with_scale(Vec3::new(1.0, 1.0, len)),
+    ));
+    match flight {
+        Flight::Rocket => {
+            e.insert(Trail {
+                every: 1.1,
+                flown: -1.5,
+                left: 40,
+                size: 0.42,
+                life: 1.1,
+            });
+        }
+        Flight::Shell => {
+            e.insert(Trail {
+                every: 2.2,
+                flown: -3.0,
+                left: 24,
+                size: 0.26,
+                life: 0.45,
+            });
+        }
+        _ => {}
+    }
+    let e = e.id();
+    // What goes with it: a bolt's light drawn out behind it, an engine's or a hot shell's
+    // glow, a grenade's flicker.
+    let (back, blink, streak, mat, scale) = match flight {
+        Flight::Bolt => {
+            let half = 1.5 * len;
+            let wide = if b.damage > 30.0 { 0.16 } else { 0.11 };
+            (
+                half * 0.55,
+                None,
+                Some(half / wide),
+                fx.streak[ti].clone(),
+                Vec3::new(half, wide, wide),
+            )
+        }
+        Flight::Rocket => (0.35, None, None, fx.engine.clone(), Vec3::splat(0.5)),
+        Flight::Shell => (0.2, None, None, fx.flash.clone(), Vec3::splat(0.4)),
+        Flight::Grenade => (
+            0.0,
+            Some(0.2),
+            None,
+            fx.muzzle[ti].clone(),
+            Vec3::splat(0.2),
+        ),
+    };
+    let mut glow = commands.spawn((
+        Follow {
+            target: e,
+            back,
+            blink,
+        },
+        Mesh3d(fx.quad.clone()),
+        MeshMaterial3d(mat),
+        Transform::from_translation(from - dir * back).with_scale(scale),
+    ));
+    match streak {
+        Some(long) => glow.insert(Streak {
+            dir,
+            long,
+            flies: false,
+        }),
+        None => glow.insert(Billboard(0.0)),
+    };
+    e
 }
 
-/// A gun's muzzle flash: a brief spark of the shooter's colour.
-fn spawn_flash(c: &mut Ctx, at: Vec3, team: Option<Team>) {
-    c.budget.live += 1;
+/// A muzzle flash's make: what a gun's looks like.
+struct Flash {
+    /// The glow at the muzzle (its radius, m) and how long it all lasts (s).
+    core: f32,
+    life: f32,
+    /// The spike ahead (its length, m) and how wide (half, m).
+    ahead: f32,
+    wide: f32,
+    /// Spikes out sideways (a muzzle brake's) or, for `cone`, fanned out ahead (a shotgun's).
+    spikes: u8,
+    spike: f32,
+    cone: bool,
+    /// White hot (a cannon's) and not the shooter's colour.
+    hot: bool,
+    /// Puffs of smoke left at the muzzle.
+    smoke: u8,
+    /// A launcher's blast out of its back.
+    back: bool,
+    /// Dust blown off the ground under it (a cannon near the ground).
+    dust: bool,
+}
+
+const FLASH: Flash = Flash {
+    core: 0.22,
+    life: 0.06,
+    ahead: 0.55,
+    wide: 0.07,
+    spikes: 0,
+    spike: 0.0,
+    cone: false,
+    hot: false,
+    smoke: 0,
+    back: false,
+    dust: false,
+};
+
+/// The flash of what fires `ammo` (none for what's thrown or laid).
+fn flash_of(ammo: Ammo) -> Option<Flash> {
+    Some(match ammo {
+        Ammo::Grenade | Ammo::Utility(_) | Ammo::Mine => return None,
+        Ammo::Gun(w) => match w {
+            Weapon::Medgun | Weapon::RepairGun => return None,
+            Weapon::Pistol => Flash {
+                core: 0.16,
+                ahead: 0.32,
+                wide: 0.05,
+                ..FLASH
+            },
+            Weapon::Rifle | Weapon::Volt | Weapon::Hive => Flash {
+                spikes: 2,
+                spike: 0.2,
+                ..FLASH
+            },
+            Weapon::Ember => Flash {
+                core: 0.27,
+                ahead: 0.6,
+                wide: 0.09,
+                spikes: 4,
+                spike: 0.24,
+                ..FLASH
+            },
+            Weapon::Scatter => Flash {
+                core: 0.32,
+                life: 0.08,
+                ahead: 0.5,
+                wide: 0.1,
+                spikes: 5,
+                spike: 0.6,
+                cone: true,
+                smoke: 1,
+                ..FLASH
+            },
+            Weapon::Lance => Flash {
+                core: 0.3,
+                life: 0.1,
+                ahead: 1.7,
+                wide: 0.09,
+                spikes: 4,
+                spike: 0.35,
+                ..FLASH
+            },
+            Weapon::Striker | Weapon::Skyhook => Flash {
+                core: 0.45,
+                life: 0.1,
+                ahead: 0.6,
+                wide: 0.16,
+                hot: true,
+                smoke: 2,
+                back: true,
+                ..FLASH
+            },
+            Weapon::Pounder => Flash {
+                core: 0.28,
+                ahead: 0.75,
+                wide: 0.09,
+                spikes: 2,
+                spike: 0.28,
+                ..FLASH
+            },
+            Weapon::Mauler => Flash {
+                core: 0.5,
+                life: 0.09,
+                ahead: 1.1,
+                wide: 0.16,
+                spikes: 2,
+                spike: 0.6,
+                hot: true,
+                smoke: 1,
+                ..FLASH
+            },
+            Weapon::Burster => Flash {
+                core: 0.36,
+                ahead: 0.8,
+                wide: 0.11,
+                spikes: 2,
+                spike: 0.35,
+                hot: true,
+                ..FLASH
+            },
+        },
+        Ammo::LightShell => Flash {
+            core: 1.4,
+            life: 0.13,
+            ahead: 3.4,
+            wide: 0.45,
+            spikes: 2,
+            spike: 1.8,
+            hot: true,
+            smoke: 4,
+            dust: true,
+            ..FLASH
+        },
+        Ammo::HeavyShell => Flash {
+            core: 2.1,
+            life: 0.16,
+            ahead: 5.0,
+            wide: 0.65,
+            spikes: 4,
+            spike: 2.6,
+            hot: true,
+            smoke: 7,
+            dust: true,
+            ..FLASH
+        },
+        Ammo::Rail => Flash {
+            core: 1.4,
+            life: 0.18,
+            ahead: 7.5,
+            wide: 0.35,
+            spikes: 4,
+            spike: 0.9,
+            dust: true,
+            ..FLASH
+        },
+        Ammo::Flak => Flash {
+            core: 0.45,
+            life: 0.07,
+            ahead: 1.1,
+            wide: 0.15,
+            spikes: 2,
+            spike: 0.45,
+            hot: true,
+            ..FLASH
+        },
+        Ammo::Rocket | Ammo::Missile => Flash {
+            core: 0.55,
+            life: 0.1,
+            ahead: 0.5,
+            wide: 0.18,
+            hot: true,
+            smoke: 2,
+            back: true,
+            ..FLASH
+        },
+        Ammo::TurretBolt => Flash {
+            core: 0.45,
+            life: 0.08,
+            ahead: 1.3,
+            wide: 0.15,
+            spikes: 2,
+            spike: 0.5,
+            ..FLASH
+        },
+        Ammo::Spitfire => Flash {
+            core: 0.2,
+            ahead: 0.45,
+            ..FLASH
+        },
+        Ammo::Chaingun => Flash {
+            core: 0.3,
+            ahead: 0.85,
+            wide: 0.1,
+            spikes: 2,
+            spike: 0.3,
+            ..FLASH
+        },
+        Ammo::AirCannon | Ammo::Autocannon => Flash {
+            core: 0.42,
+            life: 0.07,
+            ahead: 1.2,
+            wide: 0.14,
+            spikes: 2,
+            spike: 0.5,
+            hot: true,
+            ..FLASH
+        },
+    })
+}
+
+/// A spike of a muzzle flash: a streak from `at` out along `dir`, `len` long, brightest at
+/// the muzzle.
+#[allow(clippy::too_many_arguments)]
+fn spike(
+    c: &mut Ctx,
+    mat: &Handle<ParticleMaterial>,
+    at: Vec3,
+    dir: Vec3,
+    len: f32,
+    wide: f32,
+    life: f32,
+    carry: Vec3,
+) {
+    let quad = c.fx.quad.clone();
+    if let Some(mut e) = particle(
+        c,
+        Tier::Core,
+        &quad,
+        at + dir * len * 0.5,
+        carry,
+        0.0,
+        0.0,
+        life,
+        (wide, wide * 0.6),
+    ) {
+        e.insert((
+            Streak {
+                dir: -dir,
+                long: len * 0.5 / wide,
+                flies: false,
+            },
+            MeshMaterial3d(mat.clone()),
+        ));
+    }
+}
+
+/// A gun's muzzle flash at `at`, firing `ammo` along `dir`: a glow, spikes of flame ahead and
+/// out of its brake, and for the big ones smoke, a launcher's back blast and dust blown off
+/// the ground. (`carry`: the shooter's own speed, which the flash keeps.)
+fn muzzle_fx(c: &mut Ctx, at: Vec3, dir: Vec3, ammo: Ammo, team: Option<Team>, carry: Vec3) {
+    let Some(f) = flash_of(ammo) else { return };
     let fx = c.fx;
+    let ti = team.map_or(3, |t| t.index());
+    let (glow, streak) = if f.hot {
+        (fx.flash.clone(), fx.hot_streak.clone())
+    } else {
+        (fx.muzzle[ti].clone(), fx.streak[ti].clone())
+    };
+    // (A little jitter: no two flashes alike.)
+    let k = rnd(0.85, 1.15);
+    c.budget.live += 1;
     c.commands.spawn((
         Blast {
             age: 0.0,
-            life: 0.06,
-            size: 0.22,
+            life: f.life,
+            size: f.core * k,
         },
         Billboard(rnd(0.0, 6.3)),
         Mesh3d(fx.quad.clone()),
-        MeshMaterial3d(fx.muzzle[team.map_or(3, |t| t.index())].clone()),
-        Transform::from_translation(at).with_scale(Vec3::splat(0.05)),
+        MeshMaterial3d(glow),
+        Transform::from_translation(at + dir * f.core * 0.3).with_scale(Vec3::splat(0.05)),
     ));
+    spike(c, &streak, at, dir, f.ahead * k, f.wide, f.life, carry);
+    if f.spikes > 0 {
+        let side = dir.any_orthonormal_vector();
+        let roll = rnd(0.0, 6.3);
+        for i in 0..f.spikes {
+            let a = roll + i as f32 / f.spikes as f32 * std::f32::consts::TAU;
+            let out = Quat::from_axis_angle(dir, a) * side;
+            // (A shotgun's: fanned out ahead; a brake's: out sideways, swept a little forward.)
+            let d = if f.cone {
+                (dir + out * rnd(0.2, 0.45)).normalize()
+            } else {
+                (out + dir * 0.35).normalize()
+            };
+            spike(
+                c,
+                &streak,
+                at,
+                d,
+                f.spike * rnd(0.7, 1.2),
+                f.wide * 0.7,
+                f.life,
+                carry,
+            );
+        }
+    }
+    let wisp = fx.wisp[0].clone();
+    for _ in 0..f.smoke {
+        let v =
+            carry * 0.3 + dir * rnd(1.0, 4.0) * f.core + random_dir(false) * 0.5 + Vec3::Y * 0.4;
+        if let Some(mut e) = soft(
+            c,
+            Tier::Body,
+            &wisp,
+            at + dir * f.core * rnd(0.2, 1.0),
+            v,
+            -0.3,
+            2.5,
+            rnd(0.7, 1.3),
+            (f.core * 0.35, f.core * rnd(0.9, 1.4)),
+        ) {
+            e.insert(Fade::Wisp);
+        }
+    }
+    if f.back {
+        // The blast out of the launcher's back: a lick of flame and smoke thrown out behind.
+        spike(c, &streak, at - dir * 0.9, -dir, 1.3, 0.2, 0.1, carry);
+        for _ in 0..3 {
+            if let Some(mut e) = soft(
+                c,
+                Tier::Body,
+                &wisp,
+                at - dir * rnd(1.0, 1.6),
+                carry * 0.3 - dir * rnd(3.0, 7.0) + random_dir(false) * 0.8,
+                -0.3,
+                3.0,
+                rnd(0.6, 1.0),
+                (0.2, rnd(0.6, 0.9)),
+            ) {
+                e.insert(Fade::Wisp);
+            }
+        }
+    }
+    if f.dust
+        && let Some(g) = c.game.world.ground(at.x, at.z, at.y)
+        && at.y - g < 3.0
+    {
+        let dust = fx.dust[0].clone();
+        let under = Vec3::new(at.x, g + 0.2, at.z) + dir * f.core;
+        for i in 0..8 {
+            let a = i as f32 / 8.0 * std::f32::consts::TAU + rnd(0.0, 0.6);
+            let out = Vec3::new(a.cos(), 0.0, a.sin());
+            if let Some(mut e) = soft(
+                c,
+                Tier::Garnish,
+                &dust,
+                under + out * f.core * 0.6,
+                out * f.core * rnd(2.5, 4.5) + Vec3::Y * 0.5,
+                0.0,
+                2.4,
+                rnd(0.8, 1.3),
+                (f.core * 0.4, f.core * rnd(0.9, 1.3)),
+            ) {
+                e.insert(Fade::Dust);
+            }
+        }
+    }
 }
 
 fn spawn_blast(c: &mut Ctx, at: Vec3, size: f32, life: f32) {
@@ -730,8 +1208,13 @@ fn count(
     }
 }
 
-/// Turns the soft particles to the viewer: the camera, or in VR the head.
-fn face_viewer(budget: Res<FxBudget>, mut q: Query<(&mut Transform, &Billboard)>) {
+/// Turns the soft particles to the viewer (the camera, or in VR the head), and the streaks
+/// about their length to it.
+fn face_viewer(
+    budget: Res<FxBudget>,
+    mut q: Query<(&mut Transform, &Billboard)>,
+    mut streaks: Query<(&mut Transform, &Streak), Without<Billboard>>,
+) {
     let eye = budget.eye;
     for (mut t, b) in &mut q {
         let to = t.translation - eye;
@@ -741,24 +1224,57 @@ fn face_viewer(budget: Res<FxBudget>, mut q: Query<(&mut Transform, &Billboard)>
                 Transform::IDENTITY.looking_to(to, Vec3::Y).rotation * Quat::from_rotation_z(b.0);
         }
     }
+    for (mut t, s) in &mut streaks {
+        let x = s.dir.normalize_or(Vec3::X);
+        let to = eye - t.translation;
+        let z = (to - x * to.dot(x)).normalize_or(x.any_orthonormal_vector());
+        t.rotation = Quat::from_mat3(&Mat3::from_cols(x, z.cross(x), z));
+    }
 }
+
+/// What goes with a projectile keeps behind it, and goes when it's gone.
+fn follow(
+    mut commands: Commands,
+    time: Res<Time>,
+    targets: Query<(&Transform, &Projectile), Without<Follow>>,
+    mut q: Query<(Entity, &Follow, &mut Transform, Option<&mut Streak>)>,
+) {
+    let flicker = 0.65 + 0.35 * (time.elapsed_secs() * 20.0).sin();
+    for (e, f, mut t, streak) in &mut q {
+        let Ok((at, p)) = targets.get(f.target) else {
+            commands.entity(e).despawn();
+            continue;
+        };
+        let dir = p.vel.normalize_or(Vec3::NEG_Z);
+        t.translation = at.translation - dir * f.back;
+        if let Some(mut s) = streak {
+            s.dir = dir;
+        }
+        if let Some(size) = f.blink {
+            t.scale = Vec3::splat(size * flicker);
+        }
+    }
+}
+
+type ParticleParts = (
+    Entity,
+    &'static mut Particle,
+    &'static mut Transform,
+    Option<&'static Fade>,
+    Option<&'static mut MeshMaterial3d<ParticleMaterial>>,
+    Option<&'static mut Streak>,
+);
 
 /// Particles fly, grow or shrink, fade and go.
 fn particles(
     mut commands: Commands,
     time: Res<Time>,
     fx: Option<Res<FxAssets>>,
-    mut q: Query<(
-        Entity,
-        &mut Particle,
-        &mut Transform,
-        Option<&Fade>,
-        Option<&mut MeshMaterial3d<ParticleMaterial>>,
-    )>,
+    mut q: Query<ParticleParts>,
 ) {
     let Some(fx) = fx else { return };
     let dt = time.delta_secs();
-    for (e, mut p, mut t, fade, mat) in &mut q {
+    for (e, mut p, mut t, fade, mat, streak) in &mut q {
         p.age += dt;
         if p.age >= p.life {
             commands.entity(e).despawn();
@@ -769,13 +1285,21 @@ fn particles(
         p.vel *= drag;
         p.vel.y -= p.gravity * dt;
         t.translation += p.vel * dt;
-        t.scale = Vec3::splat((p.size.0 + (p.size.1 - p.size.0) * k.sqrt()).max(0.001));
+        let size = (p.size.0 + (p.size.1 - p.size.0) * k.sqrt()).max(0.001);
+        t.scale = Vec3::splat(size);
+        if let Some(mut s) = streak {
+            if s.flies && p.vel.length_squared() > 1e-4 {
+                s.dir = p.vel.normalize();
+            }
+            t.scale.x = size * s.long;
+        }
         if let (Some(&fade), Some(mut m)) = (fade, mat) {
             let step = ((k * FADE_STEPS as f32) as usize).min(FADE_STEPS - 1);
             let want = match fade {
                 Fade::Smoke => &fx.puff[step],
                 Fade::Dust => &fx.dust[step],
                 Fade::Fire => &fx.flame[step],
+                Fade::Wisp => &fx.wisp[step],
             };
             if m.0 != *want {
                 m.0 = want.clone();
@@ -804,6 +1328,7 @@ fn local_fire(
         commands: &mut commands,
         fx: &fx,
         budget: &mut budget,
+        game: &game,
     };
     let dt = time.delta_secs();
     shots.cooldown = (shots.cooldown - dt).max(0.0);
@@ -845,6 +1370,7 @@ fn local_fire(
         shots.next_id = shots.next_id.wrapping_add(1);
         let id = u32::MAX - shots.next_id % 100_000;
         let e = spawn_projectile(c, id, gs.ammo, from, vel, Some(game.team));
+        muzzle_fx(c, from, rot * Vec3::NEG_Z, gs.ammo, Some(game.team), v.vel);
         if let Some(t) = locked {
             c.commands.entity(e).insert(Homing(t));
         }
@@ -888,7 +1414,7 @@ fn local_fire(
         shots.next_id = shots.next_id.wrapping_add(1);
         let id = u32::MAX - shots.next_id % 100_000;
         spawn_projectile(c, id, Ammo::TurretBolt, from, vel, team);
-        spawn_blast(c, from, 0.3, 0.08);
+        muzzle_fx(c, from, d, Ammo::TurretBolt, team, Vec3::ZERO);
         shots.fired.push((Ammo::TurretBolt, from));
         return;
     }
@@ -948,7 +1474,8 @@ fn local_fire(
                     c.commands.entity(e).insert(Homing(t));
                 }
             }
-            spawn_flash(c, muzzle, team);
+            let carry = Vec3::new(mover.body.vel.x, 0.0, mover.body.vel.y);
+            muzzle_fx(c, muzzle, dir, Ammo::Gun(w), team, carry);
             shots.fired.push((Ammo::Gun(w), muzzle));
         }
         Some((vid, seat)) => {
@@ -995,6 +1522,7 @@ fn local_fire(
             shots.next_id = shots.next_id.wrapping_add(1);
             let id = u32::MAX - shots.next_id % 100_000;
             spawn_projectile(c, id, gs.ammo, from, vel, team);
+            muzzle_fx(c, from, dir, gs.ammo, team, v.vel);
             shots.fired.push((gs.ammo, from));
         }
     }
@@ -1018,8 +1546,11 @@ fn receive(
         commands: &mut commands,
         fx: &fx,
         budget: &mut budget,
+        game: &game,
     };
     let now = time.elapsed_secs();
+    // Who has flashed this frame (a scatter gun's pellets come as a shot each).
+    let mut flashed: Vec<(PlayerId, Ammo)> = Vec::new();
     while local.0.front().is_some_and(|l| now - l.2 > MATCH_TIME) {
         local.0.pop_front();
     }
@@ -1042,8 +1573,17 @@ fn receive(
                     }
                     continue;
                 }
-                if matches!(ammo, Ammo::Gun(_)) {
-                    spawn_flash(c, from, team);
+                let many = matches!(ammo, Ammo::Gun(w) if w.stats().pellets > 1);
+                if !(many && flashed.contains(&(owner, ammo))) {
+                    muzzle_fx(
+                        c,
+                        from,
+                        vel.normalize_or(Vec3::NEG_Z),
+                        ammo,
+                        team,
+                        Vec3::ZERO,
+                    );
+                    flashed.push((owner, ammo));
                 }
                 let e = spawn_projectile(c, id, ammo, from, vel, team);
                 if let Some(t) = target {
@@ -1089,9 +1629,8 @@ fn receive(
                     wreck: Some(kind),
                 });
             }
-            Fx::Muzzle { at, .. } => {
-                spawn_blast(c, at, 0.3, 0.08);
-            }
+            // (A turret's flash is made with its bolt's `Shot`, which says where it points.)
+            Fx::Muzzle { .. } => {}
         }
     }
 }
@@ -1215,6 +1754,14 @@ fn own_hit(game: &Game, a: Vec3, b: Vec3) -> Option<(Vec3, ImpactOn)> {
     best.map(|(f, on)| (a + seg * f, on))
 }
 
+type ProjectileParts = (
+    Entity,
+    &'static mut Projectile,
+    &'static mut Transform,
+    Option<&'static Homing>,
+    Option<&'static mut Trail>,
+);
+
 #[allow(clippy::too_many_arguments)]
 fn fly(
     mut commands: Commands,
@@ -1224,7 +1771,7 @@ fn fly(
     mut flying: ResMut<Flying>,
     mut local: ResMut<LocalImpacts>,
     mut booms: MessageWriter<Boom>,
-    mut q: Query<(Entity, &mut Projectile, &mut Transform, Option<&Homing>)>,
+    mut q: Query<ProjectileParts>,
     mut budget: ResMut<FxBudget>,
 ) {
     let Some(fx) = fx else { return };
@@ -1232,10 +1779,11 @@ fn fly(
         commands: &mut commands,
         fx: &fx,
         budget: &mut budget,
+        game: &game,
     };
     let dt = time.delta_secs();
     let now = time.elapsed_secs();
-    for (e, mut p, mut t, homing) in &mut q {
+    for (e, mut p, mut t, homing, trail) in &mut q {
         p.left -= dt;
         p.vel.y -= p.gravity * dt;
         // A missile turns towards its target (and goes on straight once flares lead it off).
@@ -1245,8 +1793,8 @@ fn fly(
             if v.flags & ps_sim::snapshot::vflags::FLARES != 0 {
                 c.commands.entity(e).remove::<Homing>();
             } else {
-                let c = v.pos + v.rot * Vec3::Y * v.kind.spec().half.y;
-                p.vel = ps_sim::sim::home(p.vel, c - t.translation, dt);
+                let middle = v.pos + v.rot * Vec3::Y * v.kind.spec().half.y;
+                p.vel = ps_sim::sim::home(p.vel, middle - t.translation, dt);
             }
         }
         let mut next = t.translation + p.vel * dt;
@@ -1277,6 +1825,34 @@ fn fly(
             c.commands.entity(e).despawn();
             flying.0.remove(&p.id);
             continue;
+        }
+        // Its trail: puffs of smoke left along the way.
+        if let Some(mut tr) = trail {
+            let step = next - t.translation;
+            tr.flown += step.length();
+            let dir = step.normalize_or(Vec3::NEG_Z);
+            let wisp = fx.wisp[0].clone();
+            let mut made = 0;
+            while tr.flown >= tr.every && tr.left > 0 && made < 4 {
+                tr.flown -= tr.every;
+                tr.left -= 1;
+                made += 1;
+                if let Some(mut e) = soft(
+                    c,
+                    Tier::Body,
+                    &wisp,
+                    next - dir * tr.flown + random_dir(false) * tr.size * 0.25,
+                    random_dir(false) * 0.5 + Vec3::Y * 0.3,
+                    -0.2,
+                    1.0,
+                    tr.life * rnd(0.8, 1.25),
+                    (tr.size * 0.5, tr.size * rnd(1.4, 1.9)),
+                ) {
+                    e.insert(Fade::Wisp);
+                }
+            }
+            // (Not making up later for what a slow frame missed.)
+            tr.flown = tr.flown.min(tr.every);
         }
         t.translation = next;
         if p.vel.length_squared() > 1e-4 {
@@ -1319,6 +1895,7 @@ fn flares(
         commands: &mut commands,
         fx: &fx,
         budget: &mut budget,
+        game: &game,
     };
     *next -= time.delta_secs();
     if *next > 0.0 {
@@ -1449,6 +2026,7 @@ fn jets_and_chutes(
                     commands: &mut commands,
                     fx: &fx,
                     budget: &mut budget,
+                    game: &game,
                 };
                 if let Some(mut e) = particle(
                     c,
