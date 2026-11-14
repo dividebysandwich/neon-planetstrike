@@ -94,6 +94,77 @@ struct FxAssets {
     shield: Handle<ParticleMaterial>,
 }
 
+/// How dear a particle is when there are many (`FxBudget`): the heart of an effect (a flash,
+/// a fireball) always shows; its body (smoke, trails) thins out under load and far off; its
+/// garnish (sparks, embers, dust, casings) goes first.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Tier {
+    Core,
+    Body,
+    Garnish,
+}
+
+/// How far (m) from the viewer the garnish is still made, and the body in full.
+const GARNISH_REACH: f32 = 120.0;
+const BODY_REACH: f32 = 250.0;
+/// The particles' cap on a flat screen and in the headset (one draw each there).
+const CAP: usize = 1400;
+const CAP_VR: usize = 700;
+
+/// The particles alive (every one an entity) against their cap: what may still be made.
+#[derive(Resource)]
+pub struct FxBudget {
+    pub live: usize,
+    pub cap: usize,
+    /// The most alive at once so far (testing: `PS_FPS=1` logs it).
+    pub peak: usize,
+    /// The viewer's eye.
+    pub eye: Vec3,
+}
+
+impl Default for FxBudget {
+    fn default() -> Self {
+        FxBudget {
+            live: 0,
+            cap: CAP,
+            peak: 0,
+            eye: Vec3::ZERO,
+        }
+    }
+}
+
+impl FxBudget {
+    fn load(&self) -> f32 {
+        self.live as f32 / self.cap.max(1) as f32
+    }
+
+    /// Whether a particle of `tier` at `at` is made (counted if so).
+    fn take(&mut self, tier: Tier, at: Vec3) -> bool {
+        let far = at.distance_squared(self.eye);
+        let load = self.load();
+        let ok = match tier {
+            Tier::Core => true,
+            Tier::Body => {
+                load < 1.0
+                    && (!(load > 0.8 || far > BODY_REACH * BODY_REACH)
+                        || rand::random::<f32>() < 0.5)
+            }
+            Tier::Garnish => load <= 0.6 && far <= GARNISH_REACH * GARNISH_REACH,
+        };
+        if ok {
+            self.live += 1;
+        }
+        ok
+    }
+}
+
+/// What the effects are made with.
+struct Ctx<'a, 'w, 's> {
+    commands: &'a mut Commands<'w, 's>,
+    fx: &'a FxAssets,
+    budget: &'a mut FxBudget,
+}
+
 /// The local player's guns, as this client reckons them (for firing at once).
 #[derive(Resource, Default)]
 pub struct LocalShots {
@@ -141,11 +212,13 @@ impl Plugin for FxPlugin {
         app.init_resource::<LocalShots>()
             .init_resource::<Flying>()
             .init_resource::<LocalImpacts>()
+            .init_resource::<FxBudget>()
             .add_message::<Boom>()
             .add_systems(Startup, make_assets)
             .add_systems(
                 Update,
                 (
+                    count,
                     local_fire,
                     receive,
                     fly,
@@ -226,8 +299,7 @@ fn team_of(game: &Game, id: PlayerId) -> Option<Team> {
 }
 
 fn spawn_projectile(
-    commands: &mut Commands,
-    fx: &FxAssets,
+    c: &mut Ctx,
     id: u32,
     ammo: Ammo,
     from: Vec3,
@@ -235,6 +307,7 @@ fn spawn_projectile(
     team: Option<Team>,
 ) -> Entity {
     let b = ammo.ballistics();
+    let (commands, fx) = (&mut *c.commands, c.fx);
     let mesh = match ammo {
         Ammo::Grenade | Ammo::Utility(_) => fx.grenade.clone(),
         Ammo::LightShell
@@ -271,8 +344,10 @@ fn spawn_projectile(
 }
 
 /// A gun's muzzle flash: a brief spark of the shooter's colour.
-fn spawn_flash(commands: &mut Commands, fx: &FxAssets, at: Vec3, team: Option<Team>) {
-    commands.spawn((
+fn spawn_flash(c: &mut Ctx, at: Vec3, team: Option<Team>) {
+    c.budget.live += 1;
+    let fx = c.fx;
+    c.commands.spawn((
         Blast {
             age: 0.0,
             life: 0.06,
@@ -285,7 +360,9 @@ fn spawn_flash(commands: &mut Commands, fx: &FxAssets, at: Vec3, team: Option<Te
     ));
 }
 
-fn spawn_blast(commands: &mut Commands, fx: &FxAssets, at: Vec3, size: f32, life: f32) {
+fn spawn_blast(c: &mut Ctx, at: Vec3, size: f32, life: f32) {
+    let (commands, fx) = (&mut *c.commands, c.fx);
+    c.budget.live += if size > 2.0 { 3 } else { 1 };
     commands.spawn((
         Blast {
             age: 0.0,
@@ -346,9 +423,11 @@ fn rnd(lo: f32, hi: f32) -> f32 {
     lo + rand::random::<f32>() * (hi - lo)
 }
 
+/// A particle of `tier`, if the budget has room for it.
 #[allow(clippy::too_many_arguments)]
 fn particle<'a>(
-    commands: &'a mut Commands,
+    c: &'a mut Ctx,
+    tier: Tier,
     mesh: &Handle<Mesh>,
     at: Vec3,
     vel: Vec3,
@@ -356,8 +435,11 @@ fn particle<'a>(
     drag: f32,
     life: f32,
     size: (f32, f32),
-) -> EntityCommands<'a> {
-    let mut e = commands.spawn((
+) -> Option<EntityCommands<'a>> {
+    if !c.budget.take(tier, at) {
+        return None;
+    }
+    let mut e = c.commands.spawn((
         Particle {
             vel,
             gravity,
@@ -377,14 +459,14 @@ fn particle<'a>(
             .with_scale(Vec3::splat(size.0.max(0.001))),
     ));
     e.insert(Visibility::default());
-    e
+    Some(e)
 }
 
 /// A soft particle (`FxAssets::quad`, facing the viewer) of `size` radius growing to the second.
 #[allow(clippy::too_many_arguments)]
 fn soft<'a>(
-    commands: &'a mut Commands,
-    fx: &FxAssets,
+    c: &'a mut Ctx,
+    tier: Tier,
     mat: &Handle<ParticleMaterial>,
     at: Vec3,
     vel: Vec3,
@@ -392,85 +474,87 @@ fn soft<'a>(
     drag: f32,
     life: f32,
     size: (f32, f32),
-) -> EntityCommands<'a> {
-    let mut e = particle(commands, &fx.quad, at, vel, gravity, drag, life, size);
+) -> Option<EntityCommands<'a>> {
+    let quad = c.fx.quad.clone();
+    let mut e = particle(c, tier, &quad, at, vel, gravity, drag, life, size)?;
     e.insert((Billboard(rnd(0.0, 6.3)), MeshMaterial3d(mat.clone())));
-    e
+    Some(e)
 }
 
 /// Sparks flying from `at` (up, off the ground, when `up`).
 fn sparks(
-    commands: &mut Commands,
-    fx: &FxAssets,
+    c: &mut Ctx,
     at: Vec3,
     n: usize,
     speed: f32,
     mat: Option<&Handle<AccentMaterial>>,
     up: bool,
 ) {
+    let (chip, hot) = (c.fx.chip.clone(), c.fx.hot.clone());
     for _ in 0..n {
         let v = random_dir(up) * speed * rnd(0.5, 1.2);
         let size = rnd(0.04, 0.08);
-        let mut e = particle(
-            commands,
-            &fx.chip,
+        let Some(mut e) = particle(
+            c,
+            Tier::Garnish,
+            &chip,
             at,
             v,
             9.8,
             1.5,
             rnd(0.2, 0.45),
             (size, 0.0),
-        );
+        ) else {
+            continue;
+        };
         match mat {
             Some(m) => e.insert(MeshMaterial3d(m.clone())),
-            None => e.insert(MeshMaterial3d(fx.hot.clone())),
+            None => e.insert(MeshMaterial3d(hot.clone())),
         };
     }
 }
 
 /// Smoke or dust: puffs round `at`, rising and spreading.
 #[allow(clippy::too_many_arguments)]
-fn puffs(
-    commands: &mut Commands,
-    fx: &FxAssets,
-    at: Vec3,
-    n: usize,
-    size: f32,
-    life: f32,
-    rise: f32,
-    kind: Fade,
-) {
-    let mats = if kind == Fade::Dust {
-        &fx.dust
+fn puffs(c: &mut Ctx, tier: Tier, at: Vec3, n: usize, size: f32, life: f32, rise: f32, kind: Fade) {
+    let mat = if kind == Fade::Dust {
+        c.fx.dust[0].clone()
     } else {
-        &fx.puff
+        c.fx.puff[0].clone()
     };
     for _ in 0..n {
         let off = random_dir(true) * size * 0.4;
         let v = Vec3::Y * rise * rnd(0.6, 1.3) + random_dir(false) * size * 0.6;
-        soft(
-            commands,
-            fx,
-            &mats[0],
+        if let Some(mut e) = soft(
+            c,
+            tier,
+            &mat,
             at + off,
             v,
             -0.3,
             1.2,
             life * rnd(0.75, 1.25),
             (size * 0.45, size * rnd(1.1, 1.5)),
-        )
-        .insert(kind);
+        ) {
+            e.insert(kind);
+        }
     }
 }
 
 /// An explosion of `size` (its splash radius) at `at`: a white flash, a fireball, debris,
-/// smoke rising and (on the ground) dust blown out round it.
-fn explosion(commands: &mut Commands, fx: &FxAssets, at: Vec3, size: f32, ground: bool) {
+/// smoke rising and (on the ground) dust blown out round it. (`light`: a flak burst's, of which
+/// there are many: a flash, a little smoke and a few sparks.)
+fn explosion(c: &mut Ctx, at: Vec3, size: f32, ground: bool, light: bool) {
     let s = size.max(0.8);
+    let (flash, flame, dust) = (
+        c.fx.flash.clone(),
+        c.fx.flame[0].clone(),
+        c.fx.dust[0].clone(),
+    );
     soft(
-        commands,
-        fx,
-        &fx.flash,
+        c,
+        Tier::Core,
+        &flash,
         at,
         Vec3::ZERO,
         0.0,
@@ -478,42 +562,58 @@ fn explosion(commands: &mut Commands, fx: &FxAssets, at: Vec3, size: f32, ground
         0.14,
         (s * 0.35, s * 0.8),
     );
+    if light {
+        puffs(
+            c,
+            Tier::Body,
+            at,
+            2,
+            s * 0.9,
+            rnd(1.2, 1.8),
+            0.3,
+            Fade::Smoke,
+        );
+        sparks(c, at, 4, 9.0, None, false);
+        return;
+    }
     for _ in 0..5 {
         let off = random_dir(true) * s * 0.2;
-        soft(
-            commands,
-            fx,
-            &fx.flame[0],
+        if let Some(mut e) = soft(
+            c,
+            Tier::Core,
+            &flame,
             at + off,
             Vec3::Y * s * 0.6 + random_dir(false) * s * 0.5,
             -1.0,
             2.0,
             rnd(0.35, 0.6),
             (s * 0.25, s * rnd(0.6, 0.85)),
-        )
-        .insert(Fade::Fire);
+        ) {
+            e.insert(Fade::Fire);
+        }
     }
     let debris = (6.0 + s * 2.0).min(22.0) as usize;
     for _ in 0..debris {
         let v = random_dir(ground) * rnd(6.0, 14.0) * s.sqrt();
         // (Embers: glowing, fading as they fly.)
         let size = rnd(0.06, 0.14) * s.sqrt();
-        soft(
-            commands,
-            fx,
-            &fx.flame[0],
+        if let Some(mut e) = soft(
+            c,
+            Tier::Garnish,
+            &flame,
             at,
             v,
             14.0,
             0.6,
             rnd(0.5, 1.1),
             (size, size * 0.4),
-        )
-        .insert(Fade::Fire);
+        ) {
+            e.insert(Fade::Fire);
+        }
     }
     puffs(
-        commands,
-        fx,
+        c,
+        Tier::Body,
         at + Vec3::Y * s * 0.2,
         (2.0 + s * 0.8).min(8.0) as usize,
         s * 0.9,
@@ -525,51 +625,47 @@ fn explosion(commands: &mut Commands, fx: &FxAssets, at: Vec3, size: f32, ground
         for k in 0..8 {
             let a = k as f32 / 8.0 * std::f32::consts::TAU + rnd(0.0, 0.5);
             let out = Vec3::new(a.cos(), 0.0, a.sin());
-            soft(
-                commands,
-                fx,
-                &fx.dust[0],
+            if let Some(mut e) = soft(
+                c,
+                Tier::Garnish,
+                &dust,
                 at + out * s * 0.3,
                 out * s * rnd(2.0, 3.0) + Vec3::Y * 0.6,
                 0.0,
                 2.2,
                 rnd(0.9, 1.4),
                 (s * 0.3, s * 0.7),
-            )
-            .insert(Fade::Dust);
+            ) {
+                e.insert(Fade::Dust);
+            }
         }
     }
 }
 
 /// What a projectile does where it hits.
-fn impact_fx(
-    commands: &mut Commands,
-    fx: &FxAssets,
-    at: Vec3,
-    ammo: Ammo,
-    what: ImpactOn,
-    team: Option<Team>,
-) {
+fn impact_fx(c: &mut Ctx, at: Vec3, ammo: Ammo, what: ImpactOn, team: Option<Team>) {
     let b = ammo.ballistics();
-    let spark = &fx.spark[team.map_or(3, |t| t.index())];
+    let spark = c.fx.spark[team.map_or(3, |t| t.index())].clone();
     if b.splash > 0.0 {
-        explosion(commands, fx, at, b.splash * 0.7, what == ImpactOn::Ground);
+        let light = matches!(ammo, Ammo::Flak | Ammo::Gun(Weapon::Burster));
+        explosion(c, at, b.splash * 0.7, what == ImpactOn::Ground, light);
         return;
     }
     // (A heavier gun, a bigger hit.)
     let k = (b.damage / 12.0).clamp(0.6, 2.5);
     match what {
         ImpactOn::Ground => {
-            puffs(commands, fx, at, 2, 0.6 * k, 0.6, 0.8, Fade::Dust);
-            sparks(commands, fx, at, 4, 5.0, Some(spark), true);
+            puffs(c, Tier::Garnish, at, 2, 0.6 * k, 0.6, 0.8, Fade::Dust);
+            sparks(c, at, 4, 5.0, Some(&spark), true);
         }
-        ImpactOn::Body => sparks(commands, fx, at, 7, 4.0, Some(spark), false),
+        ImpactOn::Body => sparks(c, at, 7, 4.0, Some(&spark), false),
         ImpactOn::Vehicle => {
-            sparks(commands, fx, at, 8, 7.0, None, false);
+            sparks(c, at, 8, 7.0, None, false);
+            let flash = c.fx.flash.clone();
             soft(
-                commands,
-                fx,
-                &fx.flash,
+                c,
+                Tier::Core,
+                &flash,
                 at,
                 Vec3::ZERO,
                 0.0,
@@ -579,10 +675,11 @@ fn impact_fx(
             );
         }
         ImpactOn::Shield => {
+            let shield = c.fx.shield.clone();
             soft(
-                commands,
-                fx,
-                &fx.shield,
+                c,
+                Tier::Core,
+                &shield,
                 at,
                 Vec3::ZERO,
                 0.0,
@@ -590,28 +687,52 @@ fn impact_fx(
                 0.25,
                 (0.3, 1.4 * k),
             );
-            sparks(commands, fx, at, 4, 3.0, Some(spark), false);
+            sparks(c, at, 4, 3.0, Some(&spark), false);
         }
         ImpactOn::Air => {
-            puffs(commands, fx, at, 2, 0.8 * k, 0.8, 0.3, Fade::Smoke);
+            puffs(c, Tier::Body, at, 2, 0.8 * k, 0.8, 0.3, Fade::Smoke);
+        }
+    }
+}
+
+/// The budget's count of what's alive, its cap and the viewer's eye (and, testing with
+/// `PS_FPS=1`, a line a second on how many particles there are).
+#[allow(clippy::too_many_arguments)]
+fn count(
+    mut budget: ResMut<FxBudget>,
+    time: Res<Time>,
+    particles: Query<(), With<Particle>>,
+    blasts: Query<(), With<Blast>>,
+    cams: Query<&GlobalTransform, With<crate::desktop::MainCamera>>,
+    vr: Option<Res<crate::vr::VrState>>,
+    xr: Option<Res<crate::vr::XrInput>>,
+    mut log: Local<(f32, bool, bool)>,
+) {
+    budget.live = particles.iter().len() + blasts.iter().len();
+    budget.peak = budget.peak.max(budget.live);
+    budget.cap = if xr.is_some() { CAP_VR } else { CAP };
+    budget.eye = match (vr, xr) {
+        (Some(vr), Some(xr)) => (vr.rig * xr.head.unwrap_or_default()).translation,
+        _ => cams.single().map_or(budget.eye, |c| c.translation()),
+    };
+    if !log.1 {
+        *log = (0.0, true, std::env::var("PS_FPS").is_ok());
+    }
+    if log.2 {
+        log.0 += time.delta_secs();
+        if log.0 >= 1.0 {
+            log.0 = 0.0;
+            info!(
+                "fx: {} particles (peak {}, cap {})",
+                budget.live, budget.peak, budget.cap
+            );
         }
     }
 }
 
 /// Turns the soft particles to the viewer: the camera, or in VR the head.
-fn face_viewer(
-    cams: Query<&GlobalTransform, With<crate::desktop::MainCamera>>,
-    vr: Option<Res<crate::vr::VrState>>,
-    xr: Option<Res<crate::vr::XrInput>>,
-    mut q: Query<(&mut Transform, &Billboard)>,
-) {
-    let eye = match (vr, xr) {
-        (Some(vr), Some(xr)) => (vr.rig * xr.head.unwrap_or_default()).translation,
-        _ => match cams.single() {
-            Ok(c) => c.translation(),
-            Err(_) => return,
-        },
-    };
+fn face_viewer(budget: Res<FxBudget>, mut q: Query<(&mut Transform, &Billboard)>) {
+    let eye = budget.eye;
     for (mut t, b) in &mut q {
         let to = t.translation - eye;
         if to.length_squared() > 1e-6 {
@@ -675,9 +796,15 @@ fn local_fire(
     time: Res<Time>,
     models: Res<crate::assets::Models>,
     view: Res<crate::seatview::SeatView>,
+    mut budget: ResMut<FxBudget>,
 ) {
     shots.fired.clear();
     let Some(fx) = fx else { return };
+    let c = &mut Ctx {
+        commands: &mut commands,
+        fx: &fx,
+        budget: &mut budget,
+    };
     let dt = time.delta_secs();
     shots.cooldown = (shots.cooldown - dt).max(0.0);
     let fire = local.cmd.fire && local.active;
@@ -717,9 +844,9 @@ fn local_fire(
         let vel = rot * Vec3::NEG_Z * gs.ammo.ballistics().speed + v.vel;
         shots.next_id = shots.next_id.wrapping_add(1);
         let id = u32::MAX - shots.next_id % 100_000;
-        let e = spawn_projectile(&mut commands, &fx, id, gs.ammo, from, vel, Some(game.team));
+        let e = spawn_projectile(c, id, gs.ammo, from, vel, Some(game.team));
         if let Some(t) = locked {
-            commands.entity(e).insert(Homing(t));
+            c.commands.entity(e).insert(Homing(t));
         }
         shots.fired.push((gs.ammo, from));
     }
@@ -760,8 +887,8 @@ fn local_fire(
         let vel = d * Ammo::TurretBolt.ballistics().speed;
         shots.next_id = shots.next_id.wrapping_add(1);
         let id = u32::MAX - shots.next_id % 100_000;
-        spawn_projectile(&mut commands, &fx, id, Ammo::TurretBolt, from, vel, team);
-        spawn_blast(&mut commands, &fx, from, 0.3, 0.08);
+        spawn_projectile(c, id, Ammo::TurretBolt, from, vel, team);
+        spawn_blast(c, from, 0.3, 0.08);
         shots.fired.push((Ammo::TurretBolt, from));
         return;
     }
@@ -816,20 +943,12 @@ fn local_fire(
                     .normalize();
                 shots.next_id = shots.next_id.wrapping_add(1);
                 let id = u32::MAX - shots.next_id % 100_000;
-                let e = spawn_projectile(
-                    &mut commands,
-                    &fx,
-                    id,
-                    Ammo::Gun(w),
-                    muzzle,
-                    d * s.speed,
-                    team,
-                );
+                let e = spawn_projectile(c, id, Ammo::Gun(w), muzzle, d * s.speed, team);
                 if let Some(t) = locked.filter(|_| Ammo::Gun(w).lock_on().is_some()) {
-                    commands.entity(e).insert(Homing(t));
+                    c.commands.entity(e).insert(Homing(t));
                 }
             }
-            spawn_flash(&mut commands, &fx, muzzle, team);
+            spawn_flash(c, muzzle, team);
             shots.fired.push((Ammo::Gun(w), muzzle));
         }
         Some((vid, seat)) => {
@@ -875,7 +994,7 @@ fn local_fire(
             let vel = dir * gs.ammo.ballistics().speed + v.vel;
             shots.next_id = shots.next_id.wrapping_add(1);
             let id = u32::MAX - shots.next_id % 100_000;
-            spawn_projectile(&mut commands, &fx, id, gs.ammo, from, vel, team);
+            spawn_projectile(c, id, gs.ammo, from, vel, team);
             shots.fired.push((gs.ammo, from));
         }
     }
@@ -892,8 +1011,14 @@ fn receive(
     mut local: ResMut<LocalImpacts>,
     time: Res<Time>,
     mut shots: Query<(Entity, &mut Projectile, &mut Transform, Option<&Homing>)>,
+    mut budget: ResMut<FxBudget>,
 ) {
     let Some(fx) = fx else { return };
+    let c = &mut Ctx {
+        commands: &mut commands,
+        fx: &fx,
+        budget: &mut budget,
+    };
     let now = time.elapsed_secs();
     while local.0.front().is_some_and(|l| now - l.2 > MATCH_TIME) {
         local.0.pop_front();
@@ -918,11 +1043,11 @@ fn receive(
                     continue;
                 }
                 if matches!(ammo, Ammo::Gun(_)) {
-                    spawn_flash(&mut commands, &fx, from, team);
+                    spawn_flash(c, from, team);
                 }
-                let e = spawn_projectile(&mut commands, &fx, id, ammo, from, vel, team);
+                let e = spawn_projectile(c, id, ammo, from, vel, team);
                 if let Some(t) = target {
-                    commands.entity(e).insert(Homing(t));
+                    c.commands.entity(e).insert(Homing(t));
                 }
                 flying.0.insert(id, (e, team));
             }
@@ -930,7 +1055,7 @@ fn receive(
                 // (A shot not seen flying is one's own: the server doesn't send those.)
                 let team = match flying.0.remove(&id) {
                     Some((e, team)) => {
-                        commands.entity(e).try_despawn();
+                        c.commands.entity(e).try_despawn();
                         team
                     }
                     None => {
@@ -952,11 +1077,11 @@ fn receive(
                         Some(game.team)
                     }
                 };
-                show_impact(&mut commands, &fx, &mut booms, at, ammo, what, team);
+                show_impact(c, &mut booms, at, ammo, what, team);
             }
             Fx::Wreck { at, kind } => {
-                spawn_blast(&mut commands, &fx, at, 7.0, 0.9);
-                explosion(&mut commands, &fx, at, 6.0, true);
+                spawn_blast(c, at, 7.0, 0.9);
+                explosion(c, at, 6.0, true, false);
                 booms.write(Boom {
                     at,
                     ammo: None,
@@ -965,7 +1090,7 @@ fn receive(
                 });
             }
             Fx::Muzzle { at, .. } => {
-                spawn_blast(&mut commands, &fx, at, 0.3, 0.08);
+                spawn_blast(c, at, 0.3, 0.08);
             }
         }
     }
@@ -973,8 +1098,7 @@ fn receive(
 
 /// An impact's effects: the blast's light, the particles, the sound (`Boom`).
 fn show_impact(
-    commands: &mut Commands,
-    fx: &FxAssets,
+    c: &mut Ctx,
     booms: &mut MessageWriter<Boom>,
     at: Vec3,
     ammo: Ammo,
@@ -983,13 +1107,13 @@ fn show_impact(
 ) {
     let b = ammo.ballistics();
     if let Ammo::Utility(k) = ammo {
-        utility_fx(commands, fx, at, k);
+        utility_fx(c, at, k);
     } else {
         if b.splash > 0.0 {
             // (The light of the blast.)
-            spawn_blast(commands, fx, at, b.splash * 0.6, 0.5);
+            spawn_blast(c, at, b.splash * 0.6, 0.5);
         }
-        impact_fx(commands, fx, at, ammo, what, team);
+        impact_fx(c, at, ammo, what, team);
     }
     booms.write(Boom {
         at,
@@ -1101,8 +1225,14 @@ fn fly(
     mut local: ResMut<LocalImpacts>,
     mut booms: MessageWriter<Boom>,
     mut q: Query<(Entity, &mut Projectile, &mut Transform, Option<&Homing>)>,
+    mut budget: ResMut<FxBudget>,
 ) {
     let Some(fx) = fx else { return };
+    let c = &mut Ctx {
+        commands: &mut commands,
+        fx: &fx,
+        budget: &mut budget,
+    };
     let dt = time.delta_secs();
     let now = time.elapsed_secs();
     for (e, mut p, mut t, homing) in &mut q {
@@ -1113,7 +1243,7 @@ fn fly(
             && let Some(v) = game.vehicle(h.0)
         {
             if v.flags & ps_sim::snapshot::vflags::FLARES != 0 {
-                commands.entity(e).remove::<Homing>();
+                c.commands.entity(e).remove::<Homing>();
             } else {
                 let c = v.pos + v.rot * Vec3::Y * v.kind.spec().half.y;
                 p.vel = ps_sim::sim::home(p.vel, c - t.translation, dt);
@@ -1138,21 +1268,13 @@ fn fly(
             None
         };
         if let Some((at, what)) = hit {
-            commands.entity(e).despawn();
-            show_impact(
-                &mut commands,
-                &fx,
-                &mut booms,
-                at,
-                p.ammo,
-                what,
-                Some(game.team),
-            );
+            c.commands.entity(e).despawn();
+            show_impact(c, &mut booms, at, p.ammo, what, Some(game.team));
             local.0.push_back((at, p.ammo, now));
             continue;
         }
         if p.left <= 0.0 {
-            commands.entity(e).despawn();
+            c.commands.entity(e).despawn();
             flying.0.remove(&p.id);
             continue;
         }
@@ -1190,8 +1312,14 @@ fn flares(
     time: Res<Time>,
     fx: Option<Res<FxAssets>>,
     mut next: Local<f32>,
+    mut budget: ResMut<FxBudget>,
 ) {
     let Some(fx) = fx else { return };
+    let c = &mut Ctx {
+        commands: &mut commands,
+        fx: &fx,
+        budget: &mut budget,
+    };
     *next -= time.delta_secs();
     if *next > 0.0 {
         return;
@@ -1206,8 +1334,9 @@ fn flares(
             let out = Vec3::new(rnd(-1.0, 1.0), rnd(-0.6, 0.4), rnd(0.2, 1.0)).normalize();
             let vel = v.vel * 0.5 + v.rot * out * rnd(10.0, 18.0);
             let size = rnd(0.25, 0.4);
-            let mut e = particle(
-                &mut commands,
+            if let Some(mut e) = particle(
+                c,
+                Tier::Body,
                 &fx.chip,
                 back,
                 vel,
@@ -1215,8 +1344,9 @@ fn flares(
                 0.6,
                 1.4,
                 (size, 0.05),
-            );
-            e.insert(MeshMaterial3d(fx.hot.clone()));
+            ) {
+                e.insert(MeshMaterial3d(fx.hot.clone()));
+            }
         }
     }
 }
@@ -1228,7 +1358,8 @@ pub fn shot_color(team: Option<Team>) -> Vec3 {
 
 /// An EMP's blue burst, a flash's white one, a smoke grenade's cloud (puffs that hang as long
 /// as the sim's cloud does).
-fn utility_fx(commands: &mut Commands, fx: &FxAssets, at: Vec3, k: ps_sim::weapons::GrenadeKind) {
+fn utility_fx(c: &mut Ctx, at: Vec3, k: ps_sim::weapons::GrenadeKind) {
+    let (commands, fx) = (&mut *c.commands, c.fx);
     use ps_sim::weapons::{GrenadeKind, SMOKE_RADIUS, SMOKE_TIME};
     let burst = |commands: &mut Commands, mat: Handle<ParticleMaterial>, size: f32, life: f32| {
         commands.spawn((
@@ -1282,6 +1413,7 @@ fn jets_and_chutes(
     mut transforms: Query<&mut Transform>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut canopy_mesh: Local<Option<Handle<Mesh>>>,
+    mut budget: ResMut<FxBudget>,
 ) {
     use ps_sim::snapshot::flags;
     let Some(fx) = fx else { return };
@@ -1313,8 +1445,14 @@ fn jets_and_chutes(
             for side in [-0.18f32, 0.18] {
                 let back = Quat::from_rotation_y(p.yaw) * Vec3::new(side, 0.0, 0.2);
                 let vel = Vec3::new(rnd(-0.6, 0.6), rnd(-7.0, -4.0), rnd(-0.6, 0.6));
-                let mut e = particle(
-                    &mut commands,
+                let c = &mut Ctx {
+                    commands: &mut commands,
+                    fx: &fx,
+                    budget: &mut budget,
+                };
+                if let Some(mut e) = particle(
+                    c,
+                    Tier::Garnish,
                     &fx.chip,
                     at + back,
                     vel,
@@ -1322,8 +1460,9 @@ fn jets_and_chutes(
                     0.25,
                     0.2,
                     (rnd(0.06, 0.1), 0.02),
-                );
-                e.insert(MeshMaterial3d(fx.hot.clone()));
+                ) {
+                    e.insert(MeshMaterial3d(fx.hot.clone()));
+                }
             }
         }
     }
