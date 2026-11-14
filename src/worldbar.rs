@@ -289,7 +289,7 @@ fn look(game: &Game, of: BarOf, d: f32, blink: bool) -> Option<Look> {
     }
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn update(
     game: Res<Game>,
     time: Res<Time>,

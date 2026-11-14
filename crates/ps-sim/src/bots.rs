@@ -2247,14 +2247,15 @@ fn destination(
             *w = inw;
         }
     }
-    if let Some(w) = &bot.walk {
-        if w.inward && w.next > walk_stop(bot, me, sim, afoot, w.base) {
-            // There: on guard (at a capture point, on its own spot in it).
-            if let Some(Goal::Point(..)) = bot.goal {
-                bot.walk = None;
-            } else {
-                return None;
-            }
+    if let Some(w) = &bot.walk
+        && w.inward
+        && w.next > walk_stop(bot, me, sim, afoot, w.base)
+    {
+        // There: on guard (at a capture point, on its own spot in it).
+        if let Some(Goal::Point(..)) = bot.goal {
+            bot.walk = None;
+        } else {
+            return None;
         }
     }
     if let Some(w) = &bot.walk {
