@@ -89,6 +89,31 @@ struct Trail {
     life: f32,
 }
 
+/// A chunk tumbling as it flies (the turn a second, as an axis times radians).
+#[derive(Component)]
+struct Spin(Vec3);
+
+/// A burning chunk: it leaves fire and smoke behind it, a puff every so often (s).
+#[derive(Component)]
+struct Smoker {
+    every: f32,
+    wait: f32,
+}
+
+/// One of the few lights flashes are lit with (`FxAssets::lights`, taken turn about): it
+/// fades from its `peak` over its `life`.
+#[derive(Component)]
+struct FlashLight {
+    age: f32,
+    life: f32,
+    peak: f32,
+}
+
+const FLASH_LIGHTS: usize = 5;
+/// How many scorch marks stay on the ground (the oldest goes).
+const SCORCHES: usize = 40;
+const SCORCH_LIFE: f32 = 25.0;
+
 /// A particle fading through materials: smoke (`FxAssets::puff`) or fire (`FxAssets::flame`).
 #[derive(Component, Clone, Copy, PartialEq)]
 enum Fade {
@@ -97,6 +122,13 @@ enum Fade {
     Fire,
     /// A trail's or a muzzle's thin grey smoke.
     Wisp,
+    /// A streak of an ember.
+    Ember,
+    /// A scorch mark on the ground.
+    Scorch,
+    /// A shockwave's ring, in the air and on the ground.
+    Ring,
+    RingFlat,
 }
 
 const FADE_STEPS: usize = 6;
@@ -129,6 +161,14 @@ struct FxAssets {
     /// A rocket's engine.
     engine: Handle<ParticleMaterial>,
     wisp: [Handle<ParticleMaterial>; FADE_STEPS],
+    ember: [Handle<ParticleMaterial>; FADE_STEPS],
+    scorch: [Handle<ParticleMaterial>; FADE_STEPS],
+    /// A blast's shockwave: facing the viewer in the air, lying on the ground.
+    ring: [Handle<ParticleMaterial>; FADE_STEPS],
+    ring_flat: [Handle<ParticleMaterial>; FADE_STEPS],
+    /// Debris: dark chunks.
+    chunk: Handle<StandardMaterial>,
+    lights: [Entity; FLASH_LIGHTS],
 }
 
 /// How dear a particle is when there are many (`FxBudget`): the heart of an effect (a flash,
@@ -157,6 +197,9 @@ pub struct FxBudget {
     pub peak: usize,
     /// The viewer's eye.
     pub eye: Vec3,
+    /// The flash light to take next, and the scorch marks lying about (oldest first).
+    next_light: usize,
+    scorches: VecDeque<Entity>,
 }
 
 impl Default for FxBudget {
@@ -166,6 +209,8 @@ impl Default for FxBudget {
             cap: CAP,
             peak: 0,
             eye: Vec3::ZERO,
+            next_light: 0,
+            scorches: VecDeque::new(),
         }
     }
 }
@@ -262,6 +307,7 @@ impl Plugin for FxPlugin {
                     fly,
                     follow,
                     blasts,
+                    flash_lights,
                     particles,
                     face_viewer,
                     flares,
@@ -281,7 +327,25 @@ fn make_assets(
     mut glows: ResMut<Assets<GlowMaterial>>,
     mut accents: ResMut<Assets<AccentMaterial>>,
     mut parts: ResMut<Assets<ParticleMaterial>>,
+    mut solids: ResMut<Assets<StandardMaterial>>,
 ) {
+    let lights = std::array::from_fn(|_| {
+        commands
+            .spawn((
+                FlashLight {
+                    age: 1.0,
+                    life: 1.0,
+                    peak: 0.0,
+                },
+                PointLight {
+                    intensity: 0.0,
+                    shadow_maps_enabled: false,
+                    ..default()
+                },
+                Transform::IDENTITY,
+            ))
+            .id()
+    });
     let spark = [Some(Team::Red), Some(Team::Blue), Some(Team::Green), None].map(|t| {
         accents.add(AccentMaterial {
             neon: NeonUniform::fixed(team_color(t), 9.0),
@@ -292,7 +356,7 @@ fn make_assets(
     let smoke_of = |c: Vec3, a: f32, parts: &mut Assets<ParticleMaterial>| {
         std::array::from_fn(|k| parts.add(ParticleMaterial::puff(c, a * fade(k), k as f32 * 3.7)))
     };
-    let puff = smoke_of(Vec3::new(0.025, 0.025, 0.03), 0.8, &mut parts);
+    let puff = smoke_of(Vec3::new(0.04, 0.038, 0.04), 0.7, &mut parts);
     let dust = smoke_of(Vec3::new(0.11, 0.1, 0.09), 0.6, &mut parts);
     let flame = std::array::from_fn(|k| {
         parts.add(ParticleMaterial::glow(
@@ -305,6 +369,29 @@ fn make_assets(
     let streak = [Some(Team::Red), Some(Team::Blue), Some(Team::Green), None]
         .map(|t| parts.add(ParticleMaterial::streak(team_color(t) * 6.0, 1.0)));
     let wisp = smoke_of(Vec3::new(0.2, 0.2, 0.22), 0.6, &mut parts);
+    let ember = std::array::from_fn(|k| {
+        parts.add(ParticleMaterial::streak(
+            Vec3::new(1.0, 0.45, 0.08) * 5.0,
+            fade(k),
+        ))
+    });
+    // (A scorch mark stays dark most of its time, then goes.)
+    let scorch = std::array::from_fn(|k| {
+        let gone = (k as f32 / FADE_STEPS as f32).powi(3);
+        parts.add(
+            ParticleMaterial::puff(Vec3::splat(0.006), 0.85 * (1.0 - gone), k as f32 * 5.3).flat(),
+        )
+    });
+    // (A shockwave: thinning out as it runs.)
+    let ring_of = |k: usize| {
+        ParticleMaterial::ring(
+            Vec3::new(1.0, 0.75, 0.45) * 2.0,
+            0.6 * fade(k) * fade(k),
+            0.2 - 0.02 * k as f32,
+        )
+    };
+    let ring = std::array::from_fn(|k| parts.add(ring_of(k)));
+    let ring_flat = std::array::from_fn(|k| parts.add(ring_of(k).flat()));
     commands.insert_resource(FxAssets {
         tracer: meshes.add(Cuboid::new(0.05, 0.05, 1.6)),
         shell: meshes.add(Sphere::new(0.18).mesh().ico(1).unwrap()),
@@ -338,6 +425,16 @@ fn make_assets(
             1.0,
         )),
         wisp,
+        ember,
+        scorch,
+        ring_flat,
+        ring,
+        chunk: solids.add(StandardMaterial {
+            base_color: Color::linear_rgb(0.02, 0.02, 0.022),
+            perceptual_roughness: 0.8,
+            ..default()
+        }),
+        lights,
     });
 }
 
@@ -751,6 +848,21 @@ fn muzzle_fx(c: &mut Ctx, at: Vec3, dir: Vec3, ammo: Ammo, team: Option<Team>, c
         Transform::from_translation(at + dir * f.core * 0.3).with_scale(Vec3::splat(0.05)),
     ));
     spike(c, &streak, at, dir, f.ahead * k, f.wide, f.life, carry);
+    if f.core >= 0.9 {
+        let colour = if f.hot {
+            Vec3::new(1.0, 0.6, 0.25)
+        } else {
+            team_color(team)
+        };
+        light(
+            c,
+            at + dir * f.core,
+            colour,
+            1_500_000.0 * f.core,
+            f.core * 14.0,
+            f.life * 2.0,
+        );
+    }
     if f.spikes > 0 {
         let side = dir.any_orthonormal_vector();
         let roll = rnd(0.0, 6.3);
@@ -839,8 +951,36 @@ fn muzzle_fx(c: &mut Ctx, at: Vec3, dir: Vec3, ammo: Ammo, team: Option<Team>, c
 }
 
 fn spawn_blast(c: &mut Ctx, at: Vec3, size: f32, life: f32) {
+    if size > 2.0 {
+        light(
+            c,
+            at + Vec3::Y,
+            Vec3::new(1.0, 0.5, 0.15),
+            4_000_000.0 * size,
+            size * 8.0,
+            life * 0.6,
+        );
+    }
+    if size > 2.0 {
+        let puff = c.fx.puff[0].clone();
+        if let Some(mut e) = soft(
+            c,
+            Tier::Body,
+            &puff,
+            at + Vec3::Y * size * 0.4,
+            Vec3::Y * size * 0.25,
+            -0.1,
+            0.8,
+            life * 4.0,
+            (size * 0.5, size * 1.3),
+        ) {
+            e.insert(Fade::Smoke);
+        }
+    }
+    // (The fire before its smoke, as the viewer sees it: drawn over it.)
+    let fore = toward_eye(c, at, size * 0.6);
     let (commands, fx) = (&mut *c.commands, c.fx);
-    c.budget.live += if size > 2.0 { 3 } else { 1 };
+    c.budget.live += 1;
     commands.spawn((
         Blast {
             age: 0.0,
@@ -850,35 +990,130 @@ fn spawn_blast(c: &mut Ctx, at: Vec3, size: f32, life: f32) {
         Billboard(rnd(0.0, 6.3)),
         Mesh3d(fx.quad.clone()),
         MeshMaterial3d(fx.fire.clone()),
-        Transform::from_translation(at).with_scale(Vec3::splat(0.1)),
+        Transform::from_translation(at + fore).with_scale(Vec3::splat(0.1)),
     ));
-    if size > 2.0 {
-        commands.spawn((
-            Blast {
-                age: 0.0,
-                life: life * 3.0,
-                size: size * 1.4,
+}
+
+/// A step of `by` metres from `at` towards the viewer: what's bright is put that much before
+/// what's dark of the same effect, so it's drawn over it (the farthest are drawn first).
+fn toward_eye(c: &Ctx, at: Vec3, by: f32) -> Vec3 {
+    (c.budget.eye - at).normalize_or_zero() * by
+}
+
+/// A flash of light at `at` (one of the few there are, turn about), fading over `life`.
+fn light(c: &mut Ctx, at: Vec3, colour: Vec3, peak: f32, range: f32, life: f32) {
+    let e = c.fx.lights[c.budget.next_light % FLASH_LIGHTS];
+    c.budget.next_light = (c.budget.next_light + 1) % FLASH_LIGHTS;
+    c.commands.entity(e).insert((
+        FlashLight {
+            age: 0.0,
+            life,
+            peak,
+        },
+        PointLight {
+            color: Color::linear_rgb(colour.x, colour.y, colour.z),
+            intensity: peak,
+            range,
+            shadow_maps_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(at),
+    ));
+}
+
+/// The flashes' lights fade out.
+fn flash_lights(time: Res<Time>, mut q: Query<(&mut FlashLight, &mut PointLight)>) {
+    let dt = time.delta_secs();
+    for (mut f, mut l) in &mut q {
+        if f.age >= f.life {
+            continue;
+        }
+        f.age += dt;
+        let k = (1.0 - f.age / f.life).max(0.0);
+        l.intensity = f.peak * k * k;
+    }
+}
+
+/// The ground (or a floor, or a roof) at `at`, if that's what is under it: where exactly, and
+/// its normal.
+fn surface(game: &Game, at: Vec3) -> Option<(Vec3, Vec3)> {
+    game.world
+        .ray(at + Vec3::Y * 0.5, at - Vec3::Y * 0.7)
+        .filter(|h| h.2.y > 0.6)
+        .map(|h| (h.1, h.2))
+}
+
+/// A quad lying on a surface (its normal `n`), turned about it at random.
+fn lying(at: Vec3, n: Vec3, size: f32) -> Transform {
+    Transform::from_translation(at)
+        .with_rotation(Quat::from_rotation_arc(Vec3::Z, n) * Quat::from_rotation_z(rnd(0.0, 6.3)))
+        .with_scale(Vec3::splat(size.max(0.001)))
+}
+
+/// A scorch mark of `size` radius left on the ground.
+fn scorch(c: &mut Ctx, at: Vec3, n: Vec3, size: f32) {
+    let (quad, mat) = (c.fx.quad.clone(), c.fx.scorch[0].clone());
+    let Some(mut e) = particle(
+        c,
+        Tier::Core,
+        &quad,
+        at + n * 0.04,
+        Vec3::ZERO,
+        0.0,
+        0.0,
+        SCORCH_LIFE,
+        (size, size * 1.05),
+    ) else {
+        return;
+    };
+    e.insert((
+        lying(at + n * 0.04, n, size),
+        MeshMaterial3d(mat),
+        Fade::Scorch,
+    ));
+    let id = e.id();
+    c.budget.scorches.push_back(id);
+    while c.budget.scorches.len() > SCORCHES {
+        if let Some(old) = c.budget.scorches.pop_front() {
+            c.commands.entity(old).try_despawn();
+        }
+    }
+}
+
+/// Chunks of debris thrown out from `at`, tumbling (`burning`: leaving fire and smoke).
+fn chunks(c: &mut Ctx, at: Vec3, n: usize, size: f32, speed: f32, burning: bool) {
+    let (chip, mat) = (c.fx.chip.clone(), c.fx.chunk.clone());
+    for _ in 0..n {
+        let s = size * rnd(0.5, 1.3);
+        let v = random_dir(true) * speed * rnd(0.5, 1.2) + Vec3::Y * speed * 0.3;
+        let tier = if burning { Tier::Core } else { Tier::Garnish };
+        let Some(mut e) = particle(
+            c,
+            tier,
+            &chip,
+            at + Vec3::Y * 0.2,
+            v,
+            14.0,
+            0.25,
+            if burning {
+                rnd(1.8, 2.8)
+            } else {
+                rnd(0.9, 1.7)
             },
-            Billboard(rnd(0.0, 6.3)),
-            Mesh3d(fx.quad.clone()),
-            MeshMaterial3d(fx.smoke.clone()),
-            Transform::from_translation(at + Vec3::Y * size * 0.5).with_scale(Vec3::splat(0.1)),
+            (s, s * 0.8),
+        ) else {
+            continue;
+        };
+        e.insert((
+            MeshMaterial3d(mat.clone()),
+            Spin(random_dir(false) * rnd(4.0, 14.0)),
         ));
-        commands.spawn((
-            Blast {
-                age: 0.0,
-                life: life * 0.6,
-                size: 0.0,
-            },
-            PointLight {
-                color: Color::linear_rgb(1.0, 0.5, 0.15),
-                intensity: 4_000_000.0 * size,
-                range: size * 8.0,
-                shadow_maps_enabled: false,
-                ..default()
-            },
-            Transform::from_translation(at + Vec3::Y),
-        ));
+        if burning {
+            e.insert(Smoker {
+                every: 0.045,
+                wait: 0.0,
+            });
+        }
     }
 }
 
@@ -1019,27 +1254,72 @@ fn puffs(c: &mut Ctx, tier: Tier, at: Vec3, n: usize, size: f32, life: f32, rise
     }
 }
 
-/// An explosion of `size` (its splash radius) at `at`: a white flash, a fireball, debris,
-/// smoke rising and (on the ground) dust blown out round it. (`light`: a flak burst's, of which
-/// there are many: a flash, a little smoke and a few sparks.)
-fn explosion(c: &mut Ctx, at: Vec3, size: f32, ground: bool, light: bool) {
+/// An explosion of `size` (its splash radius) at `at`: a white flash and its light, a
+/// shockwave's ring, a fireball, embers and chunks of debris thrown out, smoke rising (and
+/// hanging on over a big one) and, on the `ground` (where exactly, and its normal), dust blown
+/// out round it and a scorch mark left. (`light`: a flak burst's, of which there are many: a
+/// flash, a ring, a little smoke and a few sparks.)
+fn explosion(c: &mut Ctx, at: Vec3, size: f32, ground: Option<(Vec3, Vec3)>, light: bool) {
     let s = size.max(0.8);
-    let (flash, flame, dust) = (
-        c.fx.flash.clone(),
-        c.fx.flame[0].clone(),
-        c.fx.dust[0].clone(),
+    let fx = c.fx;
+    let (flash, flame, dust, ember, puff) = (
+        fx.flash.clone(),
+        fx.flame[0].clone(),
+        fx.dust[0].clone(),
+        fx.ember[0].clone(),
+        fx.puff[0].clone(),
     );
+    let fore = toward_eye(c, at, s * 0.7);
     soft(
         c,
         Tier::Core,
         &flash,
-        at,
+        at + fore,
         Vec3::ZERO,
         0.0,
         0.0,
         0.14,
-        (s * 0.35, s * 0.8),
+        (s * 0.4, s * 0.95),
     );
+    // The shockwave: racing out over the ground, or a ring in the air.
+    let quad = fx.quad.clone();
+    let wave = (s * 0.25, s * if light { 1.6 } else { 2.6 });
+    match ground {
+        Some((on, n)) => {
+            if let Some(mut e) = particle(
+                c,
+                Tier::Core,
+                &quad,
+                on + n * 0.08,
+                Vec3::ZERO,
+                0.0,
+                0.0,
+                0.32,
+                wave,
+            ) {
+                e.insert((
+                    lying(on + n * 0.08, n, wave.0),
+                    MeshMaterial3d(fx.ring_flat[0].clone()),
+                    Fade::RingFlat,
+                ));
+            }
+        }
+        None => {
+            if let Some(mut e) = soft(
+                c,
+                Tier::Core,
+                &fx.ring[0],
+                at,
+                Vec3::ZERO,
+                0.0,
+                0.0,
+                0.26,
+                wave,
+            ) {
+                e.insert(Fade::Ring);
+            }
+        }
+    }
     if light {
         puffs(
             c,
@@ -1054,41 +1334,67 @@ fn explosion(c: &mut Ctx, at: Vec3, size: f32, ground: bool, light: bool) {
         sparks(c, at, 4, 9.0, None, false);
         return;
     }
-    for _ in 0..5 {
-        let off = random_dir(true) * s * 0.2;
+    if s > 1.2 {
+        self::light(
+            c,
+            at + Vec3::Y * 0.8,
+            Vec3::new(1.0, 0.55, 0.2),
+            2_500_000.0 * s,
+            s * 9.0,
+            0.3,
+        );
+    }
+    for _ in 0..7 {
+        let off = random_dir(true) * s * 0.25;
         if let Some(mut e) = soft(
             c,
             Tier::Core,
             &flame,
-            at + off,
-            Vec3::Y * s * 0.6 + random_dir(false) * s * 0.5,
+            at + off + fore,
+            Vec3::Y * s * 0.7 + random_dir(false) * s * 0.6,
             -1.0,
             2.0,
-            rnd(0.35, 0.6),
-            (s * 0.25, s * rnd(0.6, 0.85)),
+            rnd(0.45, 0.8),
+            (s * 0.3, s * rnd(0.65, 0.95)),
         ) {
             e.insert(Fade::Fire);
         }
     }
-    let debris = (6.0 + s * 2.0).min(22.0) as usize;
-    for _ in 0..debris {
-        let v = random_dir(ground) * rnd(6.0, 14.0) * s.sqrt();
-        // (Embers: glowing, fading as they fly.)
-        let size = rnd(0.06, 0.14) * s.sqrt();
-        if let Some(mut e) = soft(
+    // Embers: streaks of fire thrown out, falling and fading.
+    let embers = (6.0 + s * 2.5).min(24.0) as usize;
+    for _ in 0..embers {
+        let v = random_dir(ground.is_some()) * rnd(7.0, 17.0) * s.sqrt();
+        let size = rnd(0.035, 0.07) * s.sqrt();
+        if let Some(mut e) = particle(
             c,
             Tier::Garnish,
-            &flame,
+            &quad,
             at,
             v,
-            14.0,
-            0.6,
-            rnd(0.5, 1.1),
-            (size, size * 0.4),
+            13.0,
+            0.7,
+            rnd(0.5, 1.2),
+            (size, size * 0.5),
         ) {
-            e.insert(Fade::Fire);
+            e.insert((
+                Streak {
+                    dir: v.normalize_or(Vec3::Y),
+                    long: rnd(5.0, 9.0),
+                    flies: true,
+                },
+                MeshMaterial3d(ember.clone()),
+                Fade::Ember,
+            ));
         }
     }
+    chunks(
+        c,
+        at,
+        (2.0 + s * 1.5).min(10.0) as usize,
+        0.09 * s.sqrt(),
+        7.0 * s.sqrt(),
+        false,
+    );
     puffs(
         c,
         Tier::Body,
@@ -1099,7 +1405,25 @@ fn explosion(c: &mut Ctx, at: Vec3, size: f32, ground: bool, light: bool) {
         s * 0.5,
         Fade::Smoke,
     );
-    if ground {
+    // A big one's smoke hangs on, drifting up.
+    if s >= 2.6 {
+        for _ in 0..3 {
+            if let Some(mut e) = soft(
+                c,
+                Tier::Body,
+                &puff,
+                at + Vec3::Y * s * rnd(0.3, 0.7) + random_dir(false) * s * 0.3,
+                Vec3::Y * rnd(0.5, 1.1) + random_dir(false) * 0.3,
+                -0.05,
+                0.3,
+                rnd(4.0, 6.0),
+                (s * 0.5, s * rnd(1.2, 1.6)),
+            ) {
+                e.insert(Fade::Smoke);
+            }
+        }
+    }
+    if let Some((on, n)) = ground {
         for k in 0..8 {
             let a = k as f32 / 8.0 * std::f32::consts::TAU + rnd(0.0, 0.5);
             let out = Vec3::new(a.cos(), 0.0, a.sin());
@@ -1117,6 +1441,9 @@ fn explosion(c: &mut Ctx, at: Vec3, size: f32, ground: bool, light: bool) {
                 e.insert(Fade::Dust);
             }
         }
+        if s >= 1.4 {
+            scorch(c, on, n, s * rnd(0.75, 0.95));
+        }
     }
 }
 
@@ -1126,7 +1453,9 @@ fn impact_fx(c: &mut Ctx, at: Vec3, ammo: Ammo, what: ImpactOn, team: Option<Tea
     let spark = c.fx.spark[team.map_or(3, |t| t.index())].clone();
     if b.splash > 0.0 {
         let light = matches!(ammo, Ammo::Flak | Ammo::Gun(Weapon::Burster));
-        explosion(c, at, b.splash * 0.7, what == ImpactOn::Ground, light);
+        let ground =
+            (what == ImpactOn::Ground).then(|| surface(c.game, at).unwrap_or((at, Vec3::Y)));
+        explosion(c, at, b.splash * 0.7, ground, light);
         return;
     }
     // (A heavier gun, a bigger hit.)
@@ -1263,21 +1592,31 @@ type ParticleParts = (
     Option<&'static Fade>,
     Option<&'static mut MeshMaterial3d<ParticleMaterial>>,
     Option<&'static mut Streak>,
+    Option<&'static Spin>,
+    Option<&'static mut Smoker>,
 );
 
 /// Particles fly, grow or shrink, fade and go.
 fn particles(
     mut commands: Commands,
+    game: Res<Game>,
     time: Res<Time>,
     fx: Option<Res<FxAssets>>,
+    mut budget: ResMut<FxBudget>,
     mut q: Query<ParticleParts>,
 ) {
     let Some(fx) = fx else { return };
+    let c = &mut Ctx {
+        commands: &mut commands,
+        fx: &fx,
+        budget: &mut budget,
+        game: &game,
+    };
     let dt = time.delta_secs();
-    for (e, mut p, mut t, fade, mat, streak) in &mut q {
+    for (e, mut p, mut t, fade, mat, streak, spin, smoker) in &mut q {
         p.age += dt;
         if p.age >= p.life {
-            commands.entity(e).despawn();
+            c.commands.entity(e).despawn();
             continue;
         }
         let k = p.age / p.life;
@@ -1293,6 +1632,42 @@ fn particles(
             }
             t.scale.x = size * s.long;
         }
+        if let Some(spin) = spin {
+            t.rotate(Quat::from_scaled_axis(spin.0 * dt));
+        }
+        if let Some(mut s) = smoker {
+            s.wait -= dt;
+            if s.wait <= 0.0 {
+                s.wait = s.every;
+                let at = t.translation;
+                if let Some(mut e) = soft(
+                    c,
+                    Tier::Body,
+                    &fx.flame[0],
+                    at,
+                    p.vel * 0.2,
+                    -1.0,
+                    1.5,
+                    rnd(0.25, 0.4),
+                    (size * 1.4, size * 0.6),
+                ) {
+                    e.insert(Fade::Fire);
+                }
+                if let Some(mut e) = soft(
+                    c,
+                    Tier::Body,
+                    &fx.puff[0],
+                    at,
+                    p.vel * 0.1 + Vec3::Y * 0.6,
+                    -0.2,
+                    1.0,
+                    rnd(0.9, 1.5),
+                    (size * 1.2, size * 3.0),
+                ) {
+                    e.insert(Fade::Smoke);
+                }
+            }
+        }
         if let (Some(&fade), Some(mut m)) = (fade, mat) {
             let step = ((k * FADE_STEPS as f32) as usize).min(FADE_STEPS - 1);
             let want = match fade {
@@ -1300,6 +1675,10 @@ fn particles(
                 Fade::Dust => &fx.dust[step],
                 Fade::Fire => &fx.flame[step],
                 Fade::Wisp => &fx.wisp[step],
+                Fade::Ember => &fx.ember[step],
+                Fade::Scorch => &fx.scorch[step],
+                Fade::Ring => &fx.ring[step],
+                Fade::RingFlat => &fx.ring_flat[step],
             };
             if m.0 != *want {
                 m.0 = want.clone();
@@ -1620,8 +1999,11 @@ fn receive(
                 show_impact(c, &mut booms, at, ammo, what, team);
             }
             Fx::Wreck { at, kind } => {
+                // A wreck: a great blast, and burning pieces of it thrown far.
                 spawn_blast(c, at, 7.0, 0.9);
-                explosion(c, at, 6.0, true, false);
+                let ground = surface(&game, at - Vec3::Y * 0.5).or(Some((at, Vec3::Y)));
+                explosion(c, at + Vec3::Y * 0.8, 6.0, ground, false);
+                chunks(c, at + Vec3::Y, 6, 0.4, 13.0, true);
                 booms.write(Boom {
                     at,
                     ammo: None,
@@ -1864,10 +2246,10 @@ fn fly(
 fn blasts(
     mut commands: Commands,
     time: Res<Time>,
-    mut q: Query<(Entity, &mut Blast, &mut Transform, Option<&mut PointLight>)>,
+    mut q: Query<(Entity, &mut Blast, &mut Transform)>,
 ) {
     let dt = time.delta_secs();
-    for (e, mut b, mut t, light) in &mut q {
+    for (e, mut b, mut t) in &mut q {
         b.age += dt;
         let k = (b.age / b.life).min(1.0);
         if k >= 1.0 {
@@ -1875,9 +2257,6 @@ fn blasts(
             continue;
         }
         t.scale = Vec3::splat((b.size * (0.3 + 0.7 * k.sqrt())).max(0.01));
-        if let Some(mut l) = light {
-            l.intensity *= 1.0 - (dt * 6.0).min(0.9);
-        }
     }
 }
 
