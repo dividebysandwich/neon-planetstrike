@@ -68,6 +68,14 @@ fn every_plan() -> Vec<BaseLayout> {
     out
 }
 
+/// A world point in the layout's own frame (as its plan has it), for the messages.
+fn loc(l: &BaseLayout, p: Vec3) -> String {
+    let d = p - l.center;
+    let v = super::builder::rot((4 - l.quarter) % 4, Vec2::new(d.x, d.z));
+    let x = if l.flip { -v.x } else { v.x };
+    format!("({x:.2}, {:.2}, {:.2})", d.y, v.y)
+}
+
 fn flat(a: Vec3, b: Vec3) -> f32 {
     Vec2::new(a.x - b.x, a.z - b.z).length()
 }
@@ -186,7 +194,9 @@ fn capture_points_are_clear_and_bots_reach_them() {
                 feet = walk(&w, feet, target);
                 assert!(
                     flat(target, feet) < 0.6,
-                    "{v}: point {i}: stuck at {feet} on the way to {target}"
+                    "{v}: point {i}: stuck at {} on the way to {}",
+                    loc(&l, feet),
+                    loc(&l, target)
                 );
             }
             inside += l.in_building(pt.pos) as usize;
@@ -248,7 +258,9 @@ fn bots_paths_reach_the_console() {
                 feet = walk(&w, feet, target);
                 assert!(
                     flat(target, feet) < 0.6,
-                    "{kind:?} {v}: stuck at {feet} on the way to {target}"
+                    "{kind:?} {v}: stuck at {} on the way to {}",
+                    loc(&l, feet),
+                    loc(&l, target)
                 );
             }
             if let Some((console, _)) = l.console
@@ -287,7 +299,10 @@ fn every_walk_of_the_graph_can_be_walked() {
                 let got = walk(&w, from, to);
                 assert!(
                     flat(got, to) < 0.6 && (got.y - to.y).abs() < 0.3,
-                    "{kind:?} {v}: from {from} to {to}: got to {got}"
+                    "{kind:?} {v}: from {} to {}: got to {}",
+                    loc(&l, from),
+                    loc(&l, to),
+                    loc(&l, got)
                 );
             }
         }
@@ -388,9 +403,10 @@ fn no_edge_can_be_walked_off() {
                             let under = w.ground(feet.x, feet.z, feet.y + STEP).unwrap_or(-99.0);
                             assert!(
                                 under > at.y - 1.5 && feet.y > at.y - 1.5,
-                                "{kind:?} {v} flip {}: walked off {style:?} at {at} towards \
-                                 {d}: over {under} at {feet}",
-                                l.flip
+                                "{kind:?} {v} flip {}: walked off {style:?} at {} to {}: over {under}",
+                                l.flip,
+                                loc(&l, at),
+                                loc(&l, feet)
                             );
                         }
                     }
@@ -549,28 +565,25 @@ fn the_plans_of_some_seeds() {
                 seen.push((l.variant, l.flip));
             }
         }
-        assert!(seen.len() >= PLANS, "{kind:?}: {seen:?}");
+        assert_eq!(seen.len(), PLANS as usize * 2, "{kind:?}: {seen:?}");
     }
 }
 
-/// How many plans each kind has.
-const PLANS: usize = 1;
-
 const GOLDEN: [u64; 16] = [
-    0x5aeb6c3d0e008e20,
-    0xd533c318b50c8d22,
-    0xef50e67b66cb00ca,
-    0x62930aed2d4e1735,
-    0x386006fe1d0f85a,
-    0xa13ccbb2d0e7ce2d,
-    0x28bafeb051371bde,
-    0x12a7e520dd660d09,
-    0x61fde3f23f0f5741,
-    0x254495c08d02dc20,
-    0xf945e52783cb1456,
-    0xd7ca2873555b70f7,
-    0x120c6fe819688d5a,
-    0x120c6fe819688d5a,
-    0x120c6fe819688d5a,
-    0x120c6fe819688d5a,
+    0x344f74f244b5305f,
+    0x38a35eb79cd5b81a,
+    0xf1629df36bd6deb4,
+    0x3e8c8da362a33ac4,
+    0x2b5749137d806935,
+    0xcb304d11703f05e7,
+    0x10f36c8711083bc0,
+    0x8936e51261f05b5e,
+    0xa7d6cf4b7893e845,
+    0x7f078723d13c0a7c,
+    0xa7a860b27f32f28c,
+    0xcddcbdc29f8cef5f,
+    0xf79ab432b71f872,
+    0xf79ab432b71f872,
+    0xf79ab432b71f872,
+    0xaf03be22a7b873c4,
 ];

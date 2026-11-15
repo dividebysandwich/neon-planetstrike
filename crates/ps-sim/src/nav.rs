@@ -380,6 +380,60 @@ mod tests {
     }
 
     #[test]
+    fn vehicles_get_from_the_pads_out_of_both_gateways() {
+        // Whatever a base's plan puts in its yard, a ground vehicle ordered there finds a way
+        // out through either gateway (and so in to the pads and the silo).
+        use crate::worldgen::BaseKind;
+        let mut plans = Vec::new();
+        for seed in [11, 12, 13, 14] {
+            let def = WorldDef::generate(WorldParams { seed, contested: 6 });
+            for c in def.continents.iter() {
+                let map = ContinentMap::build(Arc::new(c.clone()), false);
+                let nav = Nav::build(&map, &map.world);
+                for (site, l) in c.bases.iter().zip(&map.bases) {
+                    if l.kind == BaseKind::Tower {
+                        continue;
+                    }
+                    if !plans.contains(&(l.kind, l.variant)) {
+                        plans.push((l.kind, l.variant));
+                    }
+                    for (at, out) in crate::base::gateways(site) {
+                        let q = at + out * 40.0;
+                        let to = Vec3::new(q.x, map.terrain.surface(q.x, q.y), q.y);
+                        for from in l.pads.iter().map(|p| p.0).chain(l.rearm.iter().copied()) {
+                            if nav.route(from, to, GROUND_VEHICLE).is_some() {
+                                continue;
+                            }
+                            // (The yard's cells, for the message.)
+                            let (ci, cj) = cell_of(Vec2::new(l.center.x, l.center.z));
+                            let mut pic = String::new();
+                            for j in cj - 8..=cj + 8 {
+                                for i in ci - 8..=ci + 8 {
+                                    let k = Nav::k(i, j);
+                                    pic.push(if cell_of(Vec2::new(from.x, from.z)) == (i, j) {
+                                        'P'
+                                    } else if nav.blocked[k] {
+                                        '#'
+                                    } else {
+                                        '.'
+                                    });
+                                }
+                                pic.push('\n');
+                            }
+                            panic!(
+                                "seed {seed}, {} ({:?} plan {} flip {}): no way from {from} out \
+                                 of the gateway at {at}\n{pic}",
+                                site.name, l.kind, l.variant, l.flip
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(plans.len(), 9, "{plans:?}");
+    }
+
+    #[test]
     fn ground_vehicles_reach_along_the_lattice_on_every_theme() {
         use crate::theme::Theme;
         for theme in Theme::CONTESTED {

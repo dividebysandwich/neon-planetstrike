@@ -328,12 +328,16 @@ pub(super) fn building(b: &mut Builder, s: &Bld, rng: &mut Seq) -> Rooms {
     .collect();
     for _ in 0..4 {
         let k = rng.int(0, spans.len() as i32 + 1) as usize;
-        let (x, z) = match spans.get(k) {
-            Some(&(a, e, z)) => (rng.range(a, e), z),
-            // (Clear of the way along to the core room's door.)
-            None => (gx - 1.5, rng.range(gz + 1.5, gz + 2.5)),
-        };
         let w = rng.range(1.0, 1.8);
+        let (x, z, w) = match spans.get(k) {
+            Some(&(a, e, z)) => (rng.range(a, e), z, w),
+            // (A small one against the generator room's wall, clear of the way along to the
+            // core room's door.)
+            None => {
+                let w = w.min(1.2);
+                (gx - 1.5, gz + 0.35 + w / 2.0, w)
+            }
+        };
         b.decor(x, 0.0, z, Vec3::splat(w));
         if rng.chance(0.5) {
             b.decor(x, w, z, Vec3::splat(w * 0.8));

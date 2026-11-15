@@ -1,21 +1,29 @@
-//! The bases' floor plans, by kind, and what they share: the walks through the gateways, the
-//! yard's pads and silo, the capture points.
+//! The bases' floor plans: `PLANS` for each kind, picked by the base's seed (and mirrored left
+//! to right or not), and what they share: the walks through the gateways, the yard's pads and
+//! silo, the capture points.
 
+pub(super) mod center;
+pub(super) mod home;
+pub(super) mod kit;
+pub(super) mod outpost;
 pub(super) mod tower;
 
 use glam::Vec3;
 
 use crate::base::builder::Builder;
-use crate::base::building::{Bld, building};
-use crate::base::ring::{Ring, ring};
 use crate::base::*;
 use crate::noise::Seq;
+
+/// How many plans each kind of base has.
+pub const PLANS: u8 = 3;
 
 /// What a compound's plan is built from.
 pub(super) struct Ctx<'a> {
     pub(super) kind: BaseKind,
     pub(super) half: f32,
     pub(super) storeys: u8,
+    /// Which of its kind's plans.
+    pub(super) variant: u8,
     /// Capture points instead of the console.
     pub(super) points: bool,
     pub(super) rng: &'a mut Seq,
@@ -24,7 +32,11 @@ pub(super) struct Ctx<'a> {
 /// A compound (an outpost, a center base, a home) to its plan.
 pub(super) fn compound(b: &mut Builder, cx: &mut Ctx) {
     gate_walks(b, cx.half);
-    classic(b, cx);
+    match cx.kind {
+        BaseKind::Outpost => outpost::plan(b, cx),
+        BaseKind::Center => center::plan(b, cx),
+        _ => home::plan(b, cx),
+    }
     finish(b, cx.half);
 }
 
@@ -129,79 +141,4 @@ pub(super) fn point_at(
         path,
     };
     b.out.points.push(point);
-}
-
-/// The plan every compound had: the main building in the middle, bastions on the corners,
-/// stair towers on the side walls.
-fn classic(b: &mut Builder, cx: &mut Ctx) {
-    let half = cx.half;
-    let st = if cx.kind == BaseKind::Outpost {
-        30.0
-    } else {
-        40.0
-    };
-    ring(
-        b,
-        &Ring {
-            half,
-            bastions: [true; 4],
-            stairs: vec![(2, -st), (2, st), (3, -st), (3, st)],
-            more_turrets: cx.kind != BaseKind::Outpost,
-        },
-    );
-    let rooms = building(
-        b,
-        &Bld {
-            c: BLD_C,
-            half: BLD_HALF,
-            storeys: cx.storeys,
-            console: cx.kind != BaseKind::Home && !cx.points,
-            spawns: true,
-            generator: true,
-            style: 0,
-        },
-        cx.rng,
-    );
-    join(b, "gate_in", "door_out");
-    join(b, "back_out", "back_gate_in");
-    if cx.points {
-        // A in the front yard on the way in, B in the core room (where the console would
-        // be), C in the back left of the yard.
-        point(
-            b,
-            (0.0, -30.0),
-            8.0,
-            (4.0, -30.0),
-            (-2.5, -32.0),
-            "gate_in",
-            &[],
-        );
-        let console = b.marked("console");
-        point_at(
-            b,
-            rooms.core,
-            5.0,
-            (rooms.core.0, rooms.core.1 + 3.0),
-            console,
-        );
-        point(
-            b,
-            (-38.0, 36.0),
-            8.0,
-            (-38.0, 36.0),
-            (-35.5, 33.5),
-            "gate_in",
-            &[(-30.0, -12.0), (-30.0, 24.0)],
-        );
-    }
-    if cx.kind == BaseKind::Outpost {
-        yard(b, &[(-34.0, -36.0)], &[(34.0, -36.0)], (42.0, 34.0));
-    } else {
-        yard(
-            b,
-            &[(-40.0, -46.0), (40.0, 46.0)],
-            &[(42.0, -46.0), (-42.0, 46.0)],
-            (58.0, -4.0),
-        );
-    }
 }

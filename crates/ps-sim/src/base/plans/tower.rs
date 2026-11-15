@@ -1,4 +1,9 @@
-//! The towers.
+//! The towers' plans.
+//!
+//! - 0: closed walls with slits, the console on the top floor, two turrets on the roof.
+//! - 1: the same with a railed balcony round the top floor, doors out onto it front and back.
+//! - 2: the top floor an open deck between corner piers, railed; the console on the floor
+//!   below; four turrets on the roof.
 
 use glam::{Vec2, Vec3};
 
@@ -7,16 +12,28 @@ use crate::base::builder::{Builder, Gap, door};
 use crate::base::facade::{Dress, Face, facade, vent};
 use crate::base::*;
 
-/// A tower: three storeys up ramps inside, the console on the top floor, turrets on the roof
+/// A tower: three storeys up walled stairs inside, the console upstairs, turrets on the roof
 /// and the spawn bunker under the ground.
-pub(in crate::base) fn tower(b: &mut Builder) {
+pub(in crate::base) fn tower(b: &mut Builder, variant: u8) {
     let h = TOWER_HALF;
     let top = STOREY * 3.0;
+    let (balcony, deck) = (variant == 1, variant == 2);
+    // (The walls' top: under the open deck, else the roof.)
+    let walls = if deck { STOREY * 2.0 } else { top };
     let r90 = std::f32::consts::FRAC_PI_2;
     // Outer walls: a door front and back on the ground floor, slits above.
     let slits = |len: f32| -> Vec<Gap> {
         let mut g = vec![door(len / 2.0 - 2.0, 4.0, DOOR_H)];
-        for k in 1..3 {
+        if balcony {
+            // (A door out onto the balcony over the one on the ground.)
+            g.push(Gap {
+                off: len / 2.0 - 2.0,
+                w: 4.0,
+                lo: STOREY * 2.0,
+                hi: STOREY * 2.0 + 2.8,
+            });
+        }
+        for k in 1..if deck { 2 } else { 3 } {
             g.push(Gap {
                 off: 3.0,
                 w: 2.0,
@@ -40,8 +57,52 @@ pub(in crate::base) fn tower(b: &mut Builder) {
         (Vec2::new(-h, -h), Vec2::new(-h, h), Vec2::NEG_X, &sides),
         (Vec2::new(h, -h), Vec2::new(h, h), Vec2::X, &sides),
     ] {
-        b.wall(a, e, T, 0.0, top, gaps, Style::Building);
+        b.wall(a, e, T, 0.0, walls, gaps, Style::Building);
         faces.push(Face::of(a, e, T, out, gaps));
+    }
+    let y2 = STOREY * 2.0;
+    if deck {
+        // Piers on the corners up to the roof, railings between them.
+        let (p0, p1) = (h - 1.7, h + T / 2.0);
+        for (sx, sz) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+            let (a, e) = (
+                Vec3::new(sx * p0, y2, sz * p0),
+                Vec3::new(sx * p1, top, sz * p1),
+            );
+            b.boxed(a.min(e), a.max(e), Style::Building);
+        }
+        for s in [-1.0f32, 1.0] {
+            let (e0, e1) = (s * (h - RAIL_T), s * h);
+            rail(b, (-p0, e0.min(e1), p0, e0.max(e1)), y2);
+            rail(b, (e0.min(e1), -p0, e0.max(e1), p0), y2);
+        }
+        // (The stairs up to the roof keep their outer wall.)
+        b.boxed(
+            Vec3::new(-h - T / 2.0, y2, -6.3),
+            Vec3::new(-h + T / 2.0, top + 0.6, 4.0),
+            Style::Stairwell,
+        );
+    }
+    if balcony {
+        // The balcony round the top floor: out past the walls, railed.
+        let (w0, w1) = (h + T / 2.0, h + T / 2.0 + 1.6);
+        for (min, max) in [
+            ((-w1, -w1), (w1, -w0)),
+            ((-w1, w0), (w1, w1)),
+            ((-w1, -w0), (-w0, w0)),
+            ((w0, -w0), (w1, w0)),
+        ] {
+            b.boxed(
+                Vec3::new(min.0, y2 - SLAB, min.1),
+                Vec3::new(max.0, y2, max.1),
+                Style::Floor,
+            );
+        }
+        for s in [-1.0f32, 1.0] {
+            let (e0, e1) = (s * (w1 - RAIL_T), s * w1);
+            rail(b, (-w1, e0.min(e1), w1, e0.max(e1)), y2);
+            rail(b, (e0.min(e1), -w1, e0.max(e1), w1), y2);
+        }
     }
     facade(
         b,
@@ -212,14 +273,23 @@ pub(in crate::base) fn tower(b: &mut Builder) {
     }
     turret(b, (h - 2.5, r, -h + 2.5), (h - 4.4, -h + 3.4));
     turret(b, (-2.5, r, h - 2.5), (-0.9, h - 4.1));
-    // The console: the top floor, by the far wall.
-    let y2 = STOREY * 2.0;
-    let at = b.p(0.0, y2, 4.5);
+    if deck {
+        turret(b, (h - 2.5, r, h - 2.5), (h - 4.4, h - 3.4));
+        turret(b, (-2.0, r, -h + 2.4), (-0.4, -h + 4.0));
+    }
+    // The console: upstairs, by the far wall.
+    let cy = if deck { STOREY } else { y2 };
+    let at = b.p(0.0, cy, 4.5);
     let yaw = b.yaw(0.0);
     b.out.console = Some((at, yaw));
     b.out.colliders.push(round_prism(at, 0.6, 1.1, 6, 0.0));
     b.out.styles.push(Style::Pillar);
-    b.decor(-4.0, y2, 6.5, Vec3::new(2.0, 1.0, 1.0));
+    b.decor(-4.0, cy, 6.5, Vec3::new(2.0, 1.0, 1.0));
+    if deck {
+        // (Cover on the open deck.)
+        b.decor(0.0, y2, 0.0, Vec3::new(3.0, 1.2, 0.6));
+        b.decor(-1.0, y2, 5.0, Vec3::new(0.6, 1.2, 3.0));
+    }
     b.decor(3.0, STOREY, -6.5, Vec3::new(1.5, 1.5, 1.5));
     // The bunker: walls, floor, a forcefield at the foot of the ramp down.
     b.slab((-h, -h, h, h), d, &[], Style::Floor);
@@ -281,16 +351,22 @@ pub(in crate::base) fn tower(b: &mut Builder) {
     // Bots: in through the front door, up the ramps to the console; out of the bunker.
     let ramp_l = (lx0 + RAMP_W / 2.0, 0.0);
     let rr = rx0 + RAMP_W / 2.0;
-    let way = [
+    let mut way = vec![
         b.node(0.0, 0.0, -h - 5.0),
         b.node(0.0, 0.0, -h + 1.5),
         b.node(ramp_l.0, 0.0, -7.0),
         b.node(ramp_l.0, STOREY, 5.5),
-        b.node(rr, STOREY, 7.0),
-        b.node(rr, y2, -5.5),
-        b.node(1.0, y2, -6.0),
-        b.node(0.0, y2, 2.8),
     ];
+    if deck {
+        way.push(b.node(0.0, STOREY, 2.8));
+    } else {
+        way.extend([
+            b.node(rr, STOREY, 7.0),
+            b.node(rr, y2, -5.5),
+            b.node(1.0, y2, -6.0),
+            b.node(0.0, y2, 2.8),
+        ]);
+    }
     let out = [
         b.node(-2.0, d, 6.5),
         b.node(rr, d, 6.5),
@@ -301,7 +377,7 @@ pub(in crate::base) fn tower(b: &mut Builder) {
     }
     b.link(out[2], way[1]);
     b.mark("gate_out", way[0]);
-    b.mark("console", way[7]);
+    b.mark("console", *way.last().unwrap());
     b.mark("spawn", out[0]);
     b.out.to_console = b.walk("gate_out", "console");
     b.out.from_spawn = b.walk("spawn", "gate_out");

@@ -33,6 +33,7 @@ mod plans;
 mod ring;
 
 use builder::{Builder, rot};
+pub use plans::PLANS;
 use plans::tower::tower;
 
 use glam::{Vec2, Vec3};
@@ -376,24 +377,31 @@ pub fn layout(site: &BaseSite, y: f32, seed: u32) -> BaseLayout {
         marks: Vec::new(),
     };
     let mut rng = Seq::new(seed as u64, 0xba5e);
+    // Which plan, and whether mirrored left to right.
+    let (variant, flip) = (rng.int(0, PLANS as i32) as u8, rng.chance(0.5));
+    b.out.variant = variant;
+    b.out.flip = flip;
     if site.kind == BaseKind::Tower {
-        b.at(Vec2::ZERO, 0.0, 0, false, tower);
+        b.at(Vec2::ZERO, 0.0, 0, flip, |b| tower(b, variant));
         return b.out;
     }
     let storeys = match site.kind {
         BaseKind::Outpost if rng.chance(0.45) => 1,
         _ => 2,
     };
-    plans::compound(
-        &mut b,
-        &mut plans::Ctx {
-            kind: site.kind,
-            half,
-            storeys,
-            points: site.kind == BaseKind::Outpost && site.capture == Capture::Points,
-            rng: &mut rng,
-        },
-    );
+    b.at(Vec2::ZERO, 0.0, 0, flip, |b| {
+        plans::compound(
+            b,
+            &mut plans::Ctx {
+                kind: site.kind,
+                half,
+                storeys,
+                variant,
+                points: site.kind == BaseKind::Outpost && site.capture == Capture::Points,
+                rng: &mut rng,
+            },
+        )
+    });
     b.out
 }
 

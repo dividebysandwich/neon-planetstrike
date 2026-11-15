@@ -50,17 +50,19 @@ pub(super) fn ring(b: &mut Builder, r: &Ring) {
         let (o, turn) = wall_frame(w, inner);
         // Its ends: at a bastion's edge, else the corner (the front and back walls') or the
         // inner corner (the side walls').
-        let end = |sx: f32| -> (f32, f32) {
+        // (The wall's end, its parapet's, its railing's.)
+        let end = |sx: f32| -> (f32, f32, f32) {
             let c = corner_of(o + rot(turn, Vec2::new(sx * half, -1.0)));
+            let e = half - BASTION_IN;
             if r.bastions[c] {
-                (half - BASTION_IN, half - BASTION_IN)
+                (e, e, e)
             } else if w < 2 {
-                (half, inner)
+                (half, half, inner)
             } else {
-                (inner, inner)
+                (inner, half, inner)
             }
         };
-        let ((a0, r0), (a1, r1)) = (end(-1.0), end(1.0));
+        let ((a0, p0, r0), (a1, p1, r1)) = (end(-1.0), end(1.0));
         let towers: Vec<f32> = r
             .stairs
             .iter()
@@ -92,8 +94,8 @@ pub(super) fn ring(b: &mut Builder, r: &Ring) {
                 Style::Wall,
             );
             b.wall(
-                Vec2::new(-a0, -WALL_T + 0.3),
-                Vec2::new(a1, -WALL_T + 0.3),
+                Vec2::new(-p0, -WALL_T + 0.3),
+                Vec2::new(p1, -WALL_T + 0.3),
                 0.6,
                 top,
                 top + PARAPET_H,
