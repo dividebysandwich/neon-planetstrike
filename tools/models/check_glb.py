@@ -422,7 +422,8 @@ PARTS = {
         "allowed": {"body", "accent", "glow", "glow_white", "halo_white", "flow", "tread"} | SURFACES,
         # Each material of a mesh is an entity and a draw call of its own.
         "max_materials": 10,
-        "required": ("body", "accent", "glow", "glow_white", "flow"),
+        "required": ("body", "armor", "paint", "metal", "rubber", "glass", "heat", "accent",
+                     "glow", "glow_white", "flow", "tread"),
         "meshes": {
             "light_tank_hull": (4000,) + _hull(1.6, 1.25, 2.8) + ({1: 0.0},),
             "light_tank_turret": (4000, (-1.25, -0.3, -1.4), (1.25, 1.55, 1.6), {}),
@@ -444,6 +445,7 @@ PARTS = {
             "spawn_bus_mast": (4000, (-0.4, 0.0, -0.4), (0.4, 3.2, 0.4), {1: 0.0}),
             "vtol_body": (4000,) + _hull(3.6, 1.4, 4.2) + ({1: 0.0},),
             "vtol_engine": (4000, (-0.9, -0.8, -0.9), (0.9, 0.55, 0.9), {}),
+            "vtol_fan": (4000, (-0.8, 0.25, -0.8), (0.8, 0.6, 0.8), {}),
             "harvester_hull": (4000,) + _hull(2.0, 1.8, 5.5) + ({1: 0.5},),
             "harvester_wheel": (4000, (-0.3, -0.9, -0.9), (0.3, 0.9, 0.9), {1: -0.9}),
             "harvester_turret": (4000, (-0.9, -0.5, -0.9), (0.9, 0.6, 0.9), {1: -0.45}),

@@ -427,155 +427,6 @@ def machine_gun(g, reach, box=True, grips=True, r=0.06):
 
 
 # ---------------------------------------------------------------------------------------------
-# Shared pieces.
-
-def hsec(z, p):
-    """Hull section: (hw, yb, ym, yt, tw) -> 6 points; edges 0 bottom, 1 right side,
-    2 right slant, 3 top, 4 left slant, 5 left side."""
-    hw, yb, ym, yt, tw = p
-    return [(-hw, yb, z), (hw, yb, z), (hw, ym, z), (tw, yt, z), (-tw, yt, z), (-hw, ym, z)]
-
-
-def quad(rings, k, i):
-    a, b = rings[k], rings[k + 1]
-    j = (i + 1) % len(a)
-    return a[i], a[j], b[j], b[i]
-
-
-def quad_mid(q):
-    return L.mul(tuple(map(sum, zip(*q))), 0.25)
-
-
-def loft_line(g, rings, edge, s, k0, k1, w, kind="accent", t0=0.03, t1=0.97, centre=None):
-    """A line along a loft's edge `edge` at fraction s across it, over stations k0..k1."""
-    for k in range(k0, k1):
-        q = quad(rings, k, edge)
-        c = centre or L.mul(tuple(map(sum, zip(*rings[k]))), 1.0 / len(rings[k]))
-        n = P.quad_normal(q, L.sub(quad_mid(q), c))
-        a = P.on_quad(*q, s, t0 if k == k0 else 0.0)
-        b = P.on_quad(*q, s, t1 if k == k1 - 1 else 1.0)
-        if kind == "accent":
-            P.accent(g, [a, b], n, w, glow=0.05, h=0.012)
-        elif kind == "white":
-            P.white(g, [a, b], n, w, glow=0.04, h=0.012)
-        else:
-            P.flow(g, [a, b], n, w, h=0.012)
-
-
-def track(g, xin, xout, half_len, h, nose, wheels=(), wheel_r=0.3):
-    s = 1 if xout > 0 else -1
-    x0, x1 = sorted((xin, xout))
-    prof = [(-half_len + nose, 0.0), (half_len - nose, 0.0), (half_len, h * 0.55),
-            (half_len - nose * 0.5, h), (-half_len + nose * 0.5, h), (-half_len, h * 0.55)]
-    L.prism_x(g, prof, x0, x1)
-    for z in wheels:
-        P.lathe(g, (xout, wheel_r + 0.1, z), (s, 0, 0),
-                [(0, wheel_r), (0.035, wheel_r), (0.05, wheel_r * 0.55)], n=8, cap0=None,
-                cap1="accent")
-    y = h - 0.16
-    zl = half_len - nose * 0.75
-    P.accent(g, [(xout, y, -zl), (xout, y, zl)], (s, 0, 0), 0.06, glow=0.05)
-    # Treads: flow lines along the track top.
-    xm = (x0 + x1) / 2
-    for dx in (-0.12, 0.12):
-        P.flow(g, [(xm + dx, h, -half_len + nose * 0.5 + 0.05),
-                   (xm + dx, h, half_len - nose * 0.5 - 0.05)], Y, 0.035)
-
-
-def turret_ring(g, z, y, r):
-    P.lathe(g, (0, y, z), Y, [(0, r), (0.1, r)], n=12, cap0=None, cap1="body")
-    P.lathe(g, (0, y, z), Y, [(0.035, r + 0.008), (0.065, r + 0.008)], n=12, mats="accent",
-            cap0=None, cap1=None)
-
-
-def chassis(g, stations, deck_k, front_k=0):
-    """Upper hull loft along +Z plus its accents. deck_k: station index where the flat deck
-    starts (deck = stations deck_k..deck_k+1)."""
-    rings = [hsec(z, p) for z, p in stations]
-    L.loft(g, rings, Z, cap0="body", cap1="body")
-    k = deck_k
-    # Glacis chevrons and headlights.
-    q = quad(rings, front_k, 3)
-    n = P.quad_normal(q, (0, 1, -1))
-    for t in (0.3, 0.62):
-        P.accent(g, [P.on_quad(*q, 0.22, t + 0.25), P.on_quad(*q, 0.5, t),
-                     P.on_quad(*q, 0.78, t + 0.25)], n, 0.07, glow=0.06)
-    for s0, s1 in ((0.05, 0.16), (0.84, 0.95)):
-        P.disc(g, [P.on_quad(*q, s0, 0.06), P.on_quad(*q, s1, 0.06), P.on_quad(*q, s1, 0.16),
-                   P.on_quad(*q, s0, 0.16)], n, mat=LIGHT, glow=0.05)
-    # Side slants: team lines; sides: flow lines; deck edges: lines.
-    loft_line(g, rings, 2, 0.45, k, k + 1, 0.07)
-    loft_line(g, rings, 4, 0.55, k, k + 1, 0.07)
-    loft_line(g, rings, 1, 0.5, k, k + 1, 0.03, kind="flow")
-    loft_line(g, rings, 5, 0.5, k, k + 1, 0.03, kind="flow")
-    loft_line(g, rings, 3, 0.07, k, k + 1, 0.05)
-    loft_line(g, rings, 3, 0.93, k, k + 1, 0.05)
-    # Engine grille on the rear deck: flow lines across.
-    z1 = stations[k + 1][0]
-    yt, tw = stations[k][1][3], stations[k][1][4]
-    for dz in (0.2, 0.35, 0.5):
-        P.flow(g, [(-tw * 0.6, yt, z1 - dz), (tw * 0.6, yt, z1 - dz)], Y, 0.03)
-    # Tail lights on the rear face.
-    zr, (hw, yb, ym, _, _) = stations[-1]
-    for s in (-1, 1):
-        x0, x1 = sorted((s * hw * 0.5, s * hw * 0.8))
-        y0 = yb + 0.08
-        P.disc(g, [(x0, y0, zr), (x1, y0, zr), (x1, y0 + 0.1, zr), (x0, y0 + 0.1, zr)], Z,
-               mat=LIGHT, glow=0.04)
-    return rings
-
-
-def mantlet(g, stations):
-    def rs(z, p):
-        hx, hy = p
-        return [(-hx, -hy, z), (hx, -hy, z), (hx, hy, z), (-hx, hy, z)]
-    rings = [rs(z, p) for z, p in stations]
-    L.loft(g, rings, NZ, cap0="body", cap1="body")
-    q = quad(rings, 0, 2)
-    n = P.quad_normal(q, Y)
-    for s in (0.2, 0.8):
-        P.accent(g, [P.on_quad(*q, s, 0.12), P.on_quad(*q, s, 0.88)], n, 0.04, glow=0.04)
-    return rings
-
-
-def gun(g, o, prof, n=8, rings=(), ring_r=None):
-    """Barrel lathe along -Z from o; prof ends at the tip with a white bore cap."""
-    mats = ["body"] * (len(prof) - 1)
-    P.lathe(g, o, NZ, prof, n=n, mats=mats, cap0="body", cap1=LIGHT)
-    for t, r in rings:
-        P.lathe(g, o, NZ, [(t, r), (t + 0.06, r)], n=n, mats="accent", cap0=None, cap1=None)
-
-
-def footprint_loft(g, foot, layers):
-    """Loft along +Y of a footprint scaled per layer: layers = [(y, sx, sz, dz)]."""
-    rings = [[(x * sx, y, z * sz + dz) for x, z in foot] for y, sx, sz, dz in layers]
-    L.loft(g, rings, Y, cap0="body", cap1="body")
-    return rings
-
-
-def belt_lines(g, rings, edges, k=0, w=0.06):
-    c = (0, 0, 0)
-    for e in edges:
-        q = quad(rings, k, e)
-        n = P.quad_normal(q, L.sub(quad_mid(q), (0, quad_mid(q)[1], 0)))
-        P.accent(g, [P.on_quad(*q, 0.1, 0.5), P.on_quad(*q, 0.9, 0.5)], n, w, glow=0.05)
-
-
-def top_outline(g, ring, scale, w=0.05):
-    cx = sum(p[0] for p in ring) / len(ring)
-    cz = sum(p[2] for p in ring) / len(ring)
-    y = ring[0][1]
-    pts = [(cx + (x - cx) * scale, y, cz + (z - cz) * scale) for x, _, z in ring]
-    P.accent(g, pts, Y, w, closed=True, glow=0.05)
-
-
-def hatch(g, c, r):
-    P.lathe(g, c, Y, [(0, r), (0.08, r * 0.9)], n=8, cap0=None, cap1="body")
-    top = L.add(c, (0, 0.08, 0))
-    P.white(g, P.circle(top, Y, r * 0.55, 8), Y, 0.03, closed=True, glow=0.03)
-
-
-# ---------------------------------------------------------------------------------------------
 # Light tank and light AAA (shared chassis).
 
 # The track's outside in (z, y), and where the game puts the wheels (src/vehicles.rs).
@@ -1500,258 +1351,436 @@ def rover():
 
 
 # ---------------------------------------------------------------------------------------------
-# VTOL gunship.
+# Aircraft pieces.
 
-def vsec(z, p):
-    hw, yb, yt = p
-    ym = yb + 0.45 * (yt - yb)
-    return [(-0.55 * hw, yb, z), (0.55 * hw, yb, z), (hw, ym, z), (0.6 * hw, yt, z),
-            (-0.6 * hw, yt, z), (-hw, ym, z)]
+def slab(g, poly, n, t, mat=ARMOR, bevel=0.04):
+    """A wing or fin: the planar convex `poly` (3D) as its mid-plane, t thick along n, its
+    edges chamfered to a blade."""
+    n = L.norm(n)
+    P.plate(g, poly, n, t / 2, mat, bevel=bevel)
+    P.plate(g, poly, L.mul(n, -1), t / 2, mat, bevel=bevel)
 
 
-def annulus(g, c, r0, r1, n, mat, want):
-    a = P.circle(c, Y, r0, n)
-    b = P.circle(c, Y, r1, n)
+def fin(g, root, out, pts, t, mat=ARMOR, bevel=0.03, tip=None):
+    """A fin standing from `root` along `out`: pts are (z, height) in its plane. `tip` paints
+    its top `tip` deep. Returns its face normal and the 3D outline."""
+    out = L.norm(out)
+    poly = [L.add(root, L.add(L.mul(Z, a), L.mul(out, b))) for a, b in pts]
+    nrm = L.norm(L.cross(out, Z))
+    slab(g, poly, nrm, t, mat, bevel)
+    if tip:
+        top = max(b for _, b in pts)
+        band = [(a, b) for a, b in pts if b > top - 1e-6]
+        z0, z1 = min(a for a, _ in band), max(a for a, _ in band)
+        for sgn in (-1, 1):
+            m = L.mul(nrm, sgn)
+            q = [L.add(root, L.add(L.mul(Z, a), L.mul(out, b)))
+                 for a, b in ((z0 - 0.15 + bevel, top - tip), (z1 - bevel, top - tip),
+                              (z1 - bevel, top - bevel), (z0 + bevel, top - bevel))]
+            decal(g, q, m, PAINT, h=t / 2 + 0.003)
+    return nrm, poly
+
+
+def canopy(g, stations, frame=0.022, back=1):
+    """A faceted canopy over (z, half) sections (each half [(x, y)] from the sill up): glass,
+    the last `back` segments armoured, a metal frame along every section and the sill."""
+    rings = [sec(z, h) for z, h in stations]
+    n = len(stations)
+    hh = len(stations[0][1])
+
+    def mats(k, i):
+        if i == 2 * hh - 1:
+            return None  # (the open bottom)
+        return ARMOR if k >= n - 1 - back else GLASS
+    skin(g, rings, mats, cap0=GLASS, cap1=ARMOR)
+    for r in rings[:n - back]:
+        P.hose(g, r, frame, n=4, mat=METAL, caps=False)
+    for side in (0, -1):
+        P.hose(g, [r[side] for r in rings[:n - back]], frame, n=4, mat=METAL, caps=False)
+    return rings
+
+
+def nozzle(g, c, axis, r, depth=0.25, n=10, lit=True):
+    """A jet nozzle at c blowing along `axis`: a heat-stained petal ring round a lit throat."""
+    P.lathe(g, c, axis, [(0, r * 1.12), (depth * 0.5, r * 1.12), (depth, r * 0.92)], n=n,
+            mats=[METAL, HEAT], cap0=None, cap1=None)
+    end = L.add(c, L.mul(L.norm(axis), depth))
+    ring = P.circle(end, axis, r * 0.92, n)
+    back = L.add(c, L.mul(L.norm(axis), depth * 0.3))
+    inner = P.circle(back, axis, r * 0.6, n)
     for i in range(n):
         j = (i + 1) % n
-        g.face([a[i], a[j], b[j], b[i]], mat, want=want)
+        g.face([ring[i], ring[j], inner[j], inner[i]], HEAT, want=axis)
+    g.face(inner, LIGHT if lit else RUBBER, want=axis)
 
 
-def vtol():
-    g = L.Geo()
-    st = [(-4.2, (0.4, 1.15, 1.5)), (-3.0, (1.15, 0.8, 1.95)), (-1.0, (1.6, 0.6, 2.1)),
-          (1.5, (1.5, 0.65, 2.0)), (3.4, (0.7, 1.05, 1.8)), (4.2, (0.45, 1.3, 1.7))]
-    rings = [vsec(z, p) for z, p in st]
-    L.loft(g, rings, Z, cap0="body", cap1="body")
-    # Canopy: glowing windscreen, armoured rear.
-    def csec(z, p):
-        w, yb, yt = p
-        ym = (yb + yt) / 2
-        return [(-w, yb, z), (w, yb, z), (w, ym, z), (w * 0.55, yt, z), (-w * 0.55, yt, z),
-                (-w, ym, z)]
-    crings = [csec(z, p) for z, p in ((-3.6, (0.3, 1.65, 1.75)), (-2.4, (0.6, 1.85, 2.35)),
-                                      (-1.4, (0.55, 1.95, 2.3)))]
-    L.loft(g, crings, Z, mats=[LIGHT, "body"], cap0=LIGHT, cap1="body")
-    centre = (0, 1.4, 0)
-    # Chines, spine and nose lights.
-    loft_line(g, rings, 2, 0.15, 1, 4, 0.07, centre=None)
-    loft_line(g, rings, 4, 0.85, 1, 4, 0.07, centre=None)
-    loft_line(g, rings, 1, 0.5, 1, 4, 0.03, kind="flow")
-    loft_line(g, rings, 5, 0.5, 1, 4, 0.03, kind="flow")
-    loft_line(g, rings, 3, 0.5, 3, 5, 0.04, kind="flow")
-    loft_line(g, rings, 2, 0.6, 0, 1, 0.05, kind="white")
-    loft_line(g, rings, 4, 0.4, 0, 1, 0.05, kind="white")
-    q = quad(rings, 2, 3)
-    n = P.quad_normal(q, Y)
-    for t in (0.35, 0.65):
-        P.accent(g, [P.on_quad(*q, 0.15, t + 0.3), P.on_quad(*q, 0.5, t),
-                     P.on_quad(*q, 0.85, t + 0.3)], n, 0.07, glow=0.06, h=0.012)
-    q = quad(rings, 2, 0)
-    n = P.quad_normal(q, NY)
-    for s in (0.25, 0.75):
-        P.disc(g, P.circle(P.on_quad(*q, s, 0.5), n, 0.08, 6), n, mat=LIGHT, glow=0.05,
-               h=0.012)
-    for s in (-1, 1):
-        # Stub wing, shaft to the engine pivot.
-        wy = 1.03
-        P.extrude(g, [(s * 1.1, wy, -0.95), (s * 1.6, wy, -0.7), (s * 1.6, wy, 0.75),
-                      (s * 1.1, wy, 0.95)], (0, 0.16, 0))
-        P.accent(g, [(s * 1.25, wy + 0.16, -0.82), (s * 1.55, wy + 0.16, -0.65)], Y, 0.04,
-                 glow=0.04)
-        P.tube(g, (s * 1.5, 1.1, 0.2), (s * 2.25, 1.1, 0.2), 0.1, n=8)
-        # Rocket pod on a forward strut.
-        P.extrude(g, [(s * 1.1, 0.95, -1.75), (s * 2.6, 0.95, -1.7), (s * 2.6, 0.95, -1.25),
-                      (s * 1.1, 0.95, -1.0)], (0, 0.12, 0))
-        o = (s * 2.6, 0.8, -1.15)
-        P.lathe(g, o, NZ, [(0, 0.18), (0.15, 0.27), (1.75, 0.27), (1.85, 0.25)], n=8)
-        P.lathe(g, o, NZ, [(1.45, 0.278), (1.53, 0.278)], n=8, mats="accent", cap0=None,
-                cap1=None)
-        P.flow(g, [(s * 2.6, 0.8 + 0.27 * math.cos(math.pi / 8), -1.35),
-                   (s * 2.6, 0.8 + 0.27 * math.cos(math.pi / 8), -2.55)], Y, 0.025)
-        for dx in (-0.09, 0.09):
-            for dy in (-0.09, 0.09):
-                c = (s * 2.6 + dx, 0.8 + dy, -3.0)
-                P.disc(g, P.circle(c, NZ, 0.05, 6), NZ, mat=LIGHT, glow=0.0)
-        # Canted tail fin.
-        out = L.norm((s * 0.4, 1.0, 0))
-        o = (s * 0.5, 1.8, 2.3)
-        pts = [L.add(o, L.add(L.mul(Z, a), L.mul(out, b)))
-               for a, b in ((0, 0), (1.8, 0), (1.9, 0.95), (1.2, 0.95))]
-        nrm = L.cross(out, Z)
-        nrm = L.mul(nrm, 1 if nrm[0] * s > 0 else -1)
-        P.extrude(g, pts, L.mul(nrm, 0.06))
-        top = [L.add(p, L.mul(nrm, 0.06)) for p in pts]
-        P.accent(g, [P.lerp(top[0], top[3], 0.6), P.lerp(top[1], top[2], 0.6)], nrm, 0.05,
-                 glow=0.04)
-        # Landing skid and struts.
-        x = s * 1.1
-        P.tube(g, (x, 0.06, 2.0), (x, 0.06, -2.4), 0.06, n=6)
-        P.tube(g, (x, 0.06, -2.4), (x, 0.3, -2.75), 0.06, n=6)
-        for z in (-1.6, 1.2):
-            P.tube(g, (x, 0.08, z), (s * 0.8, 0.8, z), 0.05, n=6)
-    part("vtol_body", g)
-    # Engine pod (pivot frame, hover pose).
-    g = L.Geo()
-    P.lathe(g, (0, -0.75, 0), Y, [(0, 0.22), (0.15, 0.36), (0.9, 0.42), (1.15, 0.4),
-                                  (1.25, 0.3)], n=8, cap0=LIGHT)
-    P.lathe(g, (0, -0.75, 0), Y, [(0.68, 0.42), (0.74, 0.42)], n=8, mats="accent", cap0=None,
-            cap1=None)
-    y0, y1, ri, ro, n = 0.2, 0.5, 0.72, 0.85, 16
-    P.lathe(g, (0, y0, 0), Y, [(0, ro), (y1 - y0, ro)], n=n, cap0=None, cap1=None)
-    a, b = P.circle((0, y0, 0), Y, ri, n), P.circle((0, y1, 0), Y, ri, n)
-    for i in range(n):
-        j = (i + 1) % n
-        q = [a[i], a[j], b[j], b[i]]
-        mid = quad_mid(q)
-        g.face(q, "body", want=(-mid[0], 0, -mid[2]))
-    annulus(g, (0, y1, 0), ri, ro, n, "body", Y)
-    annulus(g, (0, y0, 0), ri, ro, n, "body", NY)
-    P.lathe(g, (0, y0, 0), Y, [(0.1, ro + 0.008), (0.17, ro + 0.008)], n=n, mats="accent",
-            cap0=None, cap1=None)
-    rm = (ri + ro) / 2 / math.cos(math.pi / n)
-    P.accent(g, P.circle((0, y1, 0), Y, rm, n), Y, 0.03, closed=True, glow=0.04)
-    P.white(g, P.circle((0, y0, 0), Y, rm, n), NY, 0.04, closed=True, glow=0.04)
-    for k in range(4):  # spokes
-        ang = math.pi / 4 + k * math.pi / 2
-        d = (math.cos(ang), 0, math.sin(ang))
-        t = (-d[2], 0, d[0])
-        p0, p1 = L.mul(d, 0.38), L.mul(d, 0.76)
-        P.extrude(g, [L.add(p0, L.add(L.mul(t, -0.03), (0, 0.28, 0))),
-                      L.add(p1, L.add(L.mul(t, -0.03), (0, 0.28, 0))),
-                      L.add(p1, L.add(L.mul(t, 0.03), (0, 0.28, 0))),
-                      L.add(p0, L.add(L.mul(t, 0.03), (0, 0.28, 0)))], (0, 0.06, 0))
-    for k in range(8):  # fan blades (thin pitched slabs)
-        ang = 2 * math.pi * k / 8
-        d = (math.cos(ang), 0, math.sin(ang))
-        t = (-d[2], 0, d[0])
-        pitch = L.add(L.mul(t, 0.07), (0, 0.03, 0))
-        c0, c1 = L.add(L.mul(d, 0.4), (0, 0.38, 0)), L.add(L.mul(d, 0.7), (0, 0.38, 0))
-        P.extrude(g, [L.sub(c0, pitch), L.sub(c1, pitch), L.add(c1, pitch), L.add(c0, pitch)],
-                  (0, 0.012, 0))
-    part("vtol_engine", g)
+def skid(g, s, x, z0, z1, xs, zs, y_top):
+    """A landing skid (s = +-1) at |x| from z0 back to z1, on struts up to the hull."""
+    x = s * x
+    P.hose(g, [(x, 0.3, z0 - 0.35), (x, 0.06, z0), (x, 0.06, z1), (x, 0.14, z1 + 0.25)], 0.06,
+           n=6, mat=METAL)
+    for z in zs:
+        P.tube(g, (x, 0.08, z), (s * xs, y_top, z), 0.05, n=5, mat=METAL)
 
 
 # ---------------------------------------------------------------------------------------------
-# Interceptor.
+# VTOL gunship.
+
+def vtol():
+    g = L.Geo()
+    st = [(-4.2, [(0.15, 1.2), (0.3, 1.32), (0.26, 1.45), (0.12, 1.52)]),
+          (-3.4, [(0.5, 0.92), (0.85, 1.25), (0.7, 1.6), (0.3, 1.75)]),
+          (-2.2, [(0.75, 0.68), (1.2, 1.2), (1.0, 1.8), (0.45, 2.0)]),
+          (-0.8, [(0.85, 0.6), (1.4, 1.15), (1.15, 1.85), (0.55, 2.1)]),
+          (1.4, [(0.8, 0.65), (1.3, 1.15), (1.05, 1.8), (0.5, 2.0)]),
+          (2.6, [(0.45, 0.95), (0.7, 1.3), (0.55, 1.7), (0.3, 1.82)]),
+          (4.2, [(0.2, 1.3), (0.3, 1.45), (0.25, 1.62), (0.15, 1.7)])]
+    rings = [sec(z, h) for z, h in st]
+    s = skin(g, rings, sym(["body", ARMOR, ARMOR, "body", "body"]), cap0=METAL, cap1="body")
+    CH_R, UP_R, TOP, UP_L, CH_L, LO_R, LO_L = 1, 2, 3, 4, 5, 0, 6
+    # Cheek plates, a band of team paint round the waist, lines along the chines.
+    for e in (CH_R, CH_L):
+        for k in (2, 3):
+            s.panel(g, k, e, 0.12, 0.08, 0.88, 0.92, h=0.012, rim=0.045, mat_in="body")
+        s.decal(g, 4, e, [(0.0, 0.1), (1.0, 0.1), (1.0, 0.3), (0.0, 0.3)], h=0.006)
+        s.bolts(g, 1, e, (0.5, 0.2), (0.5, 0.9), 4, r=0.018)
+    for e, a in ((UP_R, 0.12), (UP_L, 0.88)):
+        for k in (1, 2, 3, 4):
+            s.line(g, k, e, (a, 0.0 if k > 1 else 0.3), (a, 1.0 if k < 4 else 0.6), 0.04,
+                   glow=0.045)
+    # Intakes on the shoulders, a spine fairing, the tail's exhausts.
+    for e in (UP_R, UP_L):
+        s.vent(g, 3, e, 0.2, 0.35, 0.85, 0.75, slats=4, depth=0.03, mat="body")
+    P.bevel_box(g, (-0.3, 2.0, -0.6), (0.3, 2.2, 1.2), 0.06, mat=ARMOR)
+    P.vent(g, (0, 2.2, 0.3), Y, 0.44, 1.2, slats=5, depth=0.025, mat="body", mat_in=HEAT, up=NZ)
+    for sx in (-1, 1):
+        nozzle(g, (sx * 0.62, 1.48, 2.1), (sx * 0.5, 0.0, 1), 0.2, depth=0.3, n=8)
+    # Canopy: a faceted greenhouse over two seats.
+    canopy(g, [(-3.55, [(0.3, 1.6), (0.2, 1.72)]), (-2.7, [(0.62, 1.74), (0.4, 2.2)]),
+               (-1.8, [(0.66, 1.86), (0.42, 2.36)]), (-1.15, [(0.58, 1.95), (0.36, 2.22)])])
+    # Nose: a sensor ball under the chin, a probe, a gun in a chin fairing.
+    P.lathe(g, (0, 0.72, -3.1), Y, [(0, 0.08), (0.08, 0.2), (0.22, 0.24), (0.34, 0.16)], n=8,
+            mats=[METAL, GLASS, ARMOR], cap0=METAL, cap1=None)
+    P.tube(g, (0, 1.36, -4.2), (0, 1.36, -4.3), 0.03, n=4, mat=METAL)
+    P.tube(g, (0.22, 1.36, -4.0), (0.22, 1.34, -4.28), 0.012, n=4, mat=METAL)
+    for sx in (-1, 1):
+        # Stub wing (clear of the tilting duct), its shaft to the engine's pivot, a tip lamp.
+        slab(g, [(sx * 1.1, 1.1, -0.95), (sx * 1.6, 1.1, -0.7), (sx * 1.6, 1.1, 0.75),
+                 (sx * 1.1, 1.1, 0.95)], Y, 0.16, ARMOR, bevel=0.06)
+        P.tube(g, (sx * 1.5, 1.1, 0.2), (sx * 2.25, 1.1, 0.2), 0.1, n=8, mat=METAL)
+        P.lathe(g, (sx * 1.55, 1.1, 0.2), (sx, 0, 0), [(0, 0.17), (0.12, 0.17), (0.16, 0.12)],
+                n=8, mats=ARMOR, cap0=None, cap1=ARMOR)
+        # Rocket pod on a forward pylon: nineteen tubes behind a ring of team light.
+        slab(g, [(sx * 1.05, 1.0, -1.8), (sx * 2.6, 0.98, -1.75), (sx * 2.6, 0.98, -1.3),
+                 (sx * 1.05, 1.0, -1.05)], Y, 0.12, ARMOR, bevel=0.05)
+        o = (sx * 2.6, 0.8, -1.15)
+        P.lathe(g, o, NZ, [(0, 0.12), (0.16, 0.27), (0.3, 0.29), (1.6, 0.29), (1.6, 0.31),
+                           (1.85, 0.31), (1.85, 0.27)], n=10,
+                mats=[ARMOR, ARMOR, ARMOR, METAL, METAL, METAL], cap0=ARMOR, cap1=ARMOR)
+        P.lathe(g, o, NZ, [(1.3, 0.297), (1.37, 0.297)], n=10, mats="accent", cap0=None,
+                cap1=None)
+        decal(g, [(sx * 2.6 - 0.06, 0.8 + 0.29 * math.cos(math.pi / 10), -1.6),
+                  (sx * 2.6 + 0.06, 0.8 + 0.29 * math.cos(math.pi / 10), -1.6),
+                  (sx * 2.6 + 0.06, 0.8 + 0.29 * math.cos(math.pi / 10), -2.3),
+                  (sx * 2.6 - 0.06, 0.8 + 0.29 * math.cos(math.pi / 10), -2.3)], Y, h=0.004)
+        for ring_r, cnt in ((0.0, 1), (0.1, 6), (0.2, 12)):
+            for i in range(cnt):
+                a = 2 * math.pi * i / cnt + (0.26 if cnt == 12 else 0.0)
+                c = (sx * 2.6 + ring_r * math.cos(a), 0.8 + ring_r * math.sin(a), -3.0)
+                decal(g, P.circle(c, NZ, 0.04, 6), NZ, RUBBER, h=0.003)
+        # Tail: canted fins tipped in team paint, a stabiliser between them.
+        nrm, poly = fin(g, (sx * 0.22, 1.66, 2.5), (sx * 0.45, 1.0, 0),
+                        [(0, 0), (1.7, 0), (1.78, 1.05), (1.15, 1.05)], 0.07, tip=0.22)
+        strip(g, [L.add(P.lerp(poly[0], poly[3], 0.55), L.mul(nrm, sx * 0.036)),
+                  L.add(P.lerp(poly[1], poly[2], 0.55), L.mul(nrm, sx * 0.036))],
+              L.mul(nrm, sx), 0.04, glow=0.04)
+        P.disc(g, P.circle((sx * 1.6, 1.1, 0.0), (sx, 0, 0), 0.05, 6), (sx, 0, 0), glow=0.04)
+        skid(g, sx, 1.1, -2.4, 2.0, 0.78, (-1.6, 1.2), 0.75)
+    slab(g, [(-0.9, 1.72, 3.5), (0.9, 1.72, 3.5), (0.75, 1.72, 4.15), (-0.75, 1.72, 4.15)], Y,
+         0.07, ARMOR, bevel=0.03)
+    lamp(g, (0, 1.5, 4.2), Z, 0.07, depth=0.03, sides=6, lens="accent")
+    for x in (-0.4, 0.4):  # landing lamps under the belly
+        lamp(g, (x, 0.64, -1.5), NY, 0.07, depth=0.03, sides=6)
+    part("vtol_body", g)
+    # Engine pod (pivot frame, hover pose: the duct's axis is +Y, the jet blows down).
+    g = L.Geo()
+    y0, y1, ri, ro, n = 0.12, 0.5, 0.74, 0.85, 16
+    P.lathe(g, (0, y0, 0), Y, [(0, ro - 0.05), (0.08, ro), (y1 - y0 - 0.06, ro),
+                               (y1 - y0, ro - 0.04)], n=n, mats=[ARMOR, ARMOR, METAL],
+            cap0=None, cap1=None)
+    a, b = P.circle((0, y0, 0), Y, ri, n), P.circle((0, y1, 0), Y, ri, n)
+    lo, hi = P.circle((0, y0, 0), Y, ro - 0.05, n), P.circle((0, y1, 0), Y, ro - 0.04, n)
+    for i in range(n):
+        j = (i + 1) % n
+        q = [a[i], a[j], b[j], b[i]]
+        mid = cen(q)
+        g.face(q, "body", want=(-mid[0], 0, -mid[2]))
+        g.face([b[i], b[j], hi[j], hi[i]], METAL, want=Y)
+        g.face([a[i], a[j], lo[j], lo[i]], "body", want=NY)
+    P.lathe(g, (0, y0, 0), Y, [(0.14, ro + 0.008), (0.2, ro + 0.008)], n=n, mats="accent",
+            cap0=None, cap1=None)
+    # The core: a hub on four stators, the hot nozzle below.
+    P.lathe(g, (0, -0.42, 0), Y, [(0, 0.3), (0.25, 0.38), (0.62, 0.36), (0.72, 0.26)], n=10,
+            mats=[ARMOR, ARMOR, "body"], cap0=None, cap1="body")
+    nozzle(g, (0, -0.42, 0), NY, 0.3, depth=0.34, n=10)
+    for k in range(4):
+        ang = math.pi / 4 + k * math.pi / 2
+        d = (math.cos(ang), 0, math.sin(ang))
+        t = (-d[2], 0, d[0])
+        p0, p1 = L.mul(d, 0.3), L.mul(d, 0.76)
+        P.extrude(g, [L.add(p0, L.add(L.mul(t, -0.035), (0, 0.14, 0))),
+                      L.add(p1, L.add(L.mul(t, -0.035), (0, 0.14, 0))),
+                      L.add(p1, L.add(L.mul(t, 0.035), (0, 0.14, 0))),
+                      L.add(p0, L.add(L.mul(t, 0.035), (0, 0.14, 0)))], (0, 0.1, 0), METAL)
+    for sx in (-1, 1):
+        decal(g, [(sx * (ro * math.cos(math.pi / n)), 0.26, -0.16),
+                  (sx * (ro * math.cos(math.pi / n)), 0.26, 0.16),
+                  (sx * (ro * math.cos(math.pi / n)), 0.4, 0.16),
+                  (sx * (ro * math.cos(math.pi / n)), 0.4, -0.16)], (sx, 0, 0), h=0.004)
+    part("vtol_engine", g, smooth=35)
+    # The fan (same frame; the game spins it about +Y): a spinner and nine blades.
+    g = L.Geo()
+    rotor(g, (0, 0.3, 0), 0.72, 9, hub=0.2)
+    part("vtol_fan", g)
+
+
+def rotor(g, c, r, blades, hub=0.2, pitch=0.08, mat=METAL):
+    """A fan about +Y at c: a spinner and pitched blades out to r."""
+    P.lathe(g, c, Y, [(0, hub), (0.1, hub), (0.2, hub * 0.6), (0.26, hub * 0.2)], n=8,
+            mats=[mat, ARMOR, ARMOR], cap0=mat, cap1=ARMOR)
+    for k in range(blades):
+        ang = 2 * math.pi * k / blades
+        d = (math.cos(ang), 0, math.sin(ang))
+        t = (-d[2], 0, d[0])
+        tw = L.add(L.mul(t, 0.09), (0, pitch * 0.5, 0))
+        c0 = L.add(c, L.add(L.mul(d, hub * 0.9), (0, 0.06, 0)))
+        c1 = L.add(c, L.add(L.mul(d, r), (0, 0.06, 0)))
+        tw1 = L.add(L.mul(t, 0.11), (0, pitch * 0.25, 0))
+        P.extrude(g, [L.sub(c0, tw), L.sub(c1, tw1), L.add(c1, tw1), L.add(c0, tw)],
+                  (0, 0.014, 0), mat)
+
+
+# ---------------------------------------------------------------------------------------------
+# Interceptor: a twin-engined dart.
 
 def interceptor():
     g = L.Geo()
-    st = [(-4.0, (0.15, 0.85, 1.0)), (-3.0, (0.55, 0.65, 1.35)), (-1.5, (0.8, 0.55, 1.6)),
-          (1.5, (0.85, 0.55, 1.6)), (3.3, (0.75, 0.6, 1.5)), (3.9, (0.6, 0.65, 1.4))]
-    rings = [vsec(z, p) for z, p in st]
-    L.loft(g, rings, Z, cap0="body", cap1="body")
-    def csec(z, p):
-        w, yb, yt = p
-        ym = (yb + yt) / 2
-        return [(-w, yb, z), (w, yb, z), (w, ym, z), (w * 0.5, yt, z), (-w * 0.5, yt, z),
-                (-w, ym, z)]
-    crings = [csec(z, p) for z, p in ((-2.8, (0.25, 1.3, 1.4)), (-1.8, (0.45, 1.5, 2.0)),
-                                      (-0.6, (0.4, 1.55, 1.85)), (0.4, (0.25, 1.55, 1.65)))]
-    L.loft(g, crings, Z, mats=[LIGHT, LIGHT, "body"], cap0=LIGHT, cap1="body")
-    loft_line(g, rings, 2, 0.3, 1, 4, 0.05)
-    loft_line(g, rings, 4, 0.7, 1, 4, 0.05)
-    loft_line(g, rings, 3, 0.5, 2, 5, 0.03, kind="flow")
-    loft_line(g, rings, 1, 0.5, 1, 4, 0.03, kind="flow")
-    loft_line(g, rings, 5, 0.5, 1, 4, 0.03, kind="flow")
-    for s in (-1, 1):
-        # Swept wing.
-        wy = 0.85
-        P.extrude(g, [(s * 0.75, wy, -1.6), (s * 3.0, wy, 1.0), (s * 3.0, wy, 1.8),
-                      (s * 0.75, wy, 2.6)], (0, 0.12, 0))
-        P.accent(g, [(s * 0.9, wy + 0.12, -1.35), (s * 2.9, wy + 0.12, 1.05)], Y, 0.05,
-                 glow=0.05, h=0.012)
-        P.white(g, [(s * 2.95, wy + 0.06, 1.1), (s * 2.95, wy + 0.06, 1.7)], (s, 0, 0), 0.05,
-                glow=0.03)
-        # Missile rail under the wing, a missile on it.
-        P.extrude(g, [(s * 2.1, 0.75, -1.4), (s * 2.3, 0.75, -1.4), (s * 2.3, 0.75, 0.6),
-                      (s * 2.1, 0.75, 0.6)], (0, 0.1, 0))
-        o = (s * 2.2, 0.6, 0.5)
-        P.lathe(g, o, NZ, [(0, 0.1), (1.6, 0.1), (2.0, 0.0)], n=6, cap0="body")
-        P.lathe(g, o, NZ, [(1.1, 0.105), (1.2, 0.105)], n=6, mats="accent", cap0=None, cap1=None)
-        # Nose cannon.
-        P.tube(g, (s * 0.4, 0.9, -2.5), (s * 0.4, 0.9, -4.1), 0.06, n=6)
-        P.tube(g, (s * 0.4, 0.9, -4.0), (s * 0.4, 0.9, -4.1), 0.07, n=6, mat="accent")
-        # Canted tail fin.
-        out = L.norm((s * 0.45, 1.0, 0))
-        o = (s * 0.45, 1.5, 2.3)
-        pts = [L.add(o, L.add(L.mul(Z, a), L.mul(out, b)))
-               for a, b in ((0, 0), (1.6, 0), (1.6, 0.75), (1.0, 0.75))]
-        nrm = L.cross(out, Z)
-        nrm = L.mul(nrm, 1 if nrm[0] * s > 0 else -1)
-        P.extrude(g, pts, L.mul(nrm, 0.05))
-        top = [L.add(p, L.mul(nrm, 0.05)) for p in pts]
-        P.accent(g, [P.lerp(top[0], top[3], 0.6), P.lerp(top[1], top[2], 0.6)], nrm, 0.04,
-                 glow=0.04)
-        # Engine nozzle, glowing.
-        P.lathe(g, (s * 0.4, 1.05, 3.85), Z, [(0, 0.26), (0.2, 0.22)], n=8, cap0=None,
-                cap1="body")
-        P.lathe(g, (s * 0.4, 1.05, 4.05), Z, [(0, 0.16), (0.01, 0.16)], n=8, cap0=None,
-                cap1=LIGHT)
-        # Landing strut.
-        P.tube(g, (s * 0.6, 0.02, 0.8), (s * 0.5, 0.6, 0.8), 0.05, n=6)
-    P.tube(g, (0, 0.02, -2.6), (0, 0.6, -2.6), 0.05, n=6)
+    st = [(-4.0, [(0.06, 0.92), (0.12, 0.98), (0.1, 1.04), (0.05, 1.08)]),
+          (-3.0, [(0.28, 0.72), (0.5, 0.95), (0.4, 1.2), (0.18, 1.3)]),
+          (-1.6, [(0.45, 0.6), (0.78, 0.95), (0.62, 1.38), (0.3, 1.52)]),
+          (1.4, [(0.5, 0.58), (0.85, 0.95), (0.7, 1.4), (0.35, 1.55)]),
+          (3.3, [(0.45, 0.65), (0.78, 0.98), (0.66, 1.36), (0.32, 1.48)]),
+          (3.9, [(0.4, 0.72), (0.66, 1.0), (0.56, 1.3), (0.28, 1.4)])]
+    rings = [sec(z, h) for z, h in st]
+    s = skin(g, rings, sym(["body", ARMOR, ARMOR, "body", "body"]), cap0=METAL, cap1="body")
+    CH_R, UP_R, UP_L, CH_L = 1, 2, 4, 5
+    for e in (CH_R, CH_L):
+        s.panel(g, 1, e, 0.15, 0.25, 0.85, 0.92, h=0.01, rim=0.035, mat_in="body")
+        s.panel(g, 3, e, 0.12, 0.3, 0.88, 0.95, h=0.01, rim=0.04, mat_in="body")
+        s.decal(g, 3, e, [(0.0, 0.05), (1.0, 0.05), (1.0, 0.22), (0.0, 0.22)], h=0.006)
+        s.vent(g, 4, e, 0.2, 0.15, 0.8, 0.85, slats=3, depth=0.02, mat="body", mat_in=HEAT)
+    for e, a in ((UP_R, 0.25), (UP_L, 0.75)):
+        for k in (1, 2, 3):
+            s.line(g, k, e, (a, 0.25 if k == 1 else 0.0), (a, 1.0), 0.035, glow=0.04)
+    # A dorsal spine from the canopy to the tail, the bubble canopy, a probe on the nose.
+    P.bevel_box(g, (-0.16, 1.5, 0.4), (0.16, 1.62, 3.2), 0.05, mat=ARMOR)
+    canopy(g, [(-2.9, [(0.24, 1.25), (0.14, 1.36)]), (-2.1, [(0.42, 1.38), (0.26, 1.82)]),
+               (-1.2, [(0.44, 1.46), (0.28, 1.95)]), (-0.3, [(0.4, 1.5), (0.24, 1.78)]),
+               (0.5, [(0.3, 1.52), (0.16, 1.62)])], frame=0.018)
+    P.tube(g, (0, 1.0, -4.0), (0, 1.0, -4.12), 0.02, n=4, mat=METAL)
+    for sx in (-1, 1):
+        # Intake: a raked scoop on the flank, dark inside.
+        xa, xb = sorted((sx * 0.62, sx * 1.05))
+        P.extrude(g, [(xa, 0.78, -1.5), (xb, 0.78, -1.9), (xb, 1.24, -1.9), (xa, 1.24, -1.5)],
+                  (0, 0, 2.0), ARMOR, caps=(False, True))
+        g.face([(xa, 0.8, -1.52), (xb, 0.8, -1.9), (xb, 1.22, -1.9), (xa, 1.22, -1.52)], RUBBER,
+               want=(sx * 0.4, 0, -1))
+        P.plate(g, [(sx * 1.05, 0.82, -1.7), (sx * 1.05, 0.82, 0.3), (sx * 1.05, 1.2, 0.3),
+                    (sx * 1.05, 1.2, -1.7)], (sx, 0, 0), 0.012, ARMOR, bevel=0.03)
+        # Swept wing: a blade with control surfaces, a tip of team paint, a lamp.
+        wy = 0.92
+        wing = [(sx * 0.75, wy, -1.6), (sx * 3.0, wy, 1.0), (sx * 3.0, wy, 1.8),
+                (sx * 0.75, wy, 2.6)]
+        slab(g, wing, Y, 0.13, ARMOR, bevel=0.09)
+        top = wy + 0.065
+        strip(g, [(sx * 0.98, top, -1.2), (sx * 2.8, top, 0.9)], Y, 0.04, glow=0.045)
+        for (xa_, xb_), z0 in (((1.0, 1.9), 2.0), ((2.0, 2.8), 1.75)):
+            pa = [(sx * xa_, top, z0 - 0.5), (sx * xb_, top, z0 - 0.55 - (xb_ - 2.0) * 0.1),
+                  (sx * xb_, top, z0 - 0.12 - (xb_ - xa_) * 0.22), (sx * xa_, top, z0 + 0.08)]
+            P.panel_inset(g, pa, Y, h=0.008, rim=0.03, mat=ARMOR, mat_in="body", floor=0.4)
+        decal(g, [(sx * 2.72, top, 0.78), (sx * 2.92, top, 1.0), (sx * 2.92, top, 1.7),
+                  (sx * 2.72, top, 1.78)], Y, h=0.004)
+        P.disc(g, P.rect_on((sx * 3.0, wy, 1.4), (sx, 0, 0), 0.5, 0.05, up=Z), (sx, 0, 0),
+               glow=0.04)
+        # A missile on its rail under the wing: seeker, paint band, fins.
+        P.bevel_box(g, (sx * 2.2 - 0.06, 0.72, -1.2), (sx * 2.2 + 0.06, 0.86, 0.5), 0.02,
+                    mat=METAL)
+        o = (sx * 2.2, 0.6, 0.5)
+        P.lathe(g, o, NZ, [(0, 0.07), (0.05, 0.1), (0.5, 0.1), (0.62, 0.1), (1.7, 0.1),
+                           (1.86, 0.07), (2.0, 0.02)], n=8,
+                mats=[METAL, ARMOR, PAINT, ARMOR, ARMOR, GLASS], cap0=HEAT, cap1=GLASS)
+        for a in range(4):
+            ang = math.pi / 4 + a * math.pi / 2
+            d = (math.cos(ang), math.sin(ang), 0)
+            slab(g, [L.add(o, L.add(L.mul(d, 0.09), (0, 0, -0.02))),
+                     L.add(o, L.add(L.mul(d, 0.26), (0, 0, -0.05))),
+                     L.add(o, L.add(L.mul(d, 0.26), (0, 0, -0.25))),
+                     L.add(o, L.add(L.mul(d, 0.09), (0, 0, -0.4)))], L.cross(d, Z), 0.016,
+                 METAL, bevel=0.0)
+        # Nose cannon in a fairing along the chine.
+        P.lathe(g, (sx * 0.4, 0.9, -2.4), NZ, [(0, 0.11), (0.6, 0.1), (0.75, 0.065),
+                                               (1.55, 0.055), (1.55, 0.075), (1.7, 0.075),
+                                               (1.7, 0.04), (1.6, 0.04)], n=8,
+                mats=[ARMOR, ARMOR, METAL, HEAT, HEAT, HEAT, "body"], cap0=None, cap1=RUBBER)
+        # Canted fin with a tip of team paint; the engine's nozzle.
+        nrm, poly = fin(g, (sx * 0.5, 1.4, 2.2), (sx * 0.5, 1.0, 0),
+                        [(0, 0), (1.65, 0), (1.72, 0.85), (1.05, 0.85)], 0.06, tip=0.2)
+        strip(g, [L.add(P.lerp(poly[0], poly[3], 0.5), L.mul(nrm, sx * 0.031)),
+                  L.add(P.lerp(poly[1], poly[2], 0.5), L.mul(nrm, sx * 0.031))],
+              L.mul(nrm, sx), 0.035, glow=0.04)
+        P.lathe(g, (sx * 0.4, 1.05, 3.3), Z, [(0, 0.3), (0.56, 0.28)], n=10, mats=ARMOR,
+                cap0=None, cap1=None)
+        nozzle(g, (sx * 0.4, 1.05, 3.85), Z, 0.24, depth=0.22, n=10)
+        # Main gear: a strut and a wheel under the wing root.
+        P.tube(g, (sx * 0.62, 0.16, 0.8), (sx * 0.5, 0.62, 0.8), 0.045, n=5, mat=METAL)
+        P.lathe(g, (sx * 0.62 - 0.05, 0.14, 0.8), X, [(0, 0.14), (0.1, 0.14)], n=8, mats=RUBBER,
+                cap0=METAL, cap1=METAL)
+    P.tube(g, (0, 0.16, -2.6), (0, 0.66, -2.6), 0.04, n=5, mat=METAL)
+    P.lathe(g, (-0.05, 0.14, -2.6), X, [(0, 0.14), (0.1, 0.14)], n=8, mats=RUBBER, cap0=METAL,
+            cap1=METAL)
+    lamp(g, (0, 0.74, -3.0), (0, -1, -0.4), 0.06, depth=0.03, sides=6)
     part("interceptor_hull", g)
 
 
 # ---------------------------------------------------------------------------------------------
-# Dropship.
+# Dropship: a heavy lifter on four ducted fans.
+
+def lift_pod(g, c, r=0.85, n=12):
+    """A fixed lift fan at c (duct axis +Y): the duct, stators, a rotor and the hot core."""
+    y0, y1, ri = -0.2, 0.25, r - 0.11
+    P.lathe(g, L.add(c, (0, y0, 0)), Y, [(0, r - 0.06), (0.1, r), (y1 - y0 - 0.07, r),
+                                        (y1 - y0, r - 0.04)], n=n, mats=[ARMOR, ARMOR, METAL],
+            cap0=None, cap1=None)
+    a, b = P.circle(L.add(c, (0, y0, 0)), Y, ri, n), P.circle(L.add(c, (0, y1, 0)), Y, ri, n)
+    lo = P.circle(L.add(c, (0, y0, 0)), Y, r - 0.06, n)
+    hi = P.circle(L.add(c, (0, y1, 0)), Y, r - 0.04, n)
+    for i in range(n):
+        j = (i + 1) % n
+        q = [a[i], a[j], b[j], b[i]]
+        mid = cen(q)
+        g.face(q, "body", want=(c[0] - mid[0], 0, c[2] - mid[2]))
+        g.face([b[i], b[j], hi[j], hi[i]], METAL, want=Y)
+        g.face([a[i], a[j], lo[j], lo[i]], "body", want=NY)
+    P.lathe(g, L.add(c, (0, y0 + 0.16, 0)), Y, [(0, r + 0.008), (0.06, r + 0.008)], n=n,
+            mats="accent", cap0=None, cap1=None)
+    P.lathe(g, L.add(c, (0, -0.5, 0)), Y, [(0, 0.24), (0.2, 0.3), (0.5, 0.28)], n=8, mats=ARMOR,
+            cap0=None, cap1=None)
+    nozzle(g, L.add(c, (0, -0.5, 0)), NY, 0.24, depth=0.22, n=8)
+    for k in range(3):
+        ang = math.pi / 6 + k * 2 * math.pi / 3
+        d = (math.cos(ang), 0, math.sin(ang))
+        t = (-d[2], 0, d[0])
+        p0, p1 = L.add(c, L.mul(d, 0.24)), L.add(c, L.mul(d, ri + 0.02))
+        P.extrude(g, [L.add(p0, L.add(L.mul(t, -0.04), (0, -0.16, 0))),
+                      L.add(p1, L.add(L.mul(t, -0.04), (0, -0.16, 0))),
+                      L.add(p1, L.add(L.mul(t, 0.04), (0, -0.16, 0))),
+                      L.add(p0, L.add(L.mul(t, 0.04), (0, -0.16, 0)))], (0, 0.1, 0), METAL)
+    rotor(g, L.add(c, (0, -0.04, 0)), ri - 0.03, 7, hub=0.2)
+
 
 def dropship():
     g = L.Geo()
-    st = [(-7.0, (1.0, 1.4, 3.0)), (-5.8, (1.7, 0.7, 3.5)), (4.5, (1.8, 0.6, 3.6)),
-          (7.0, (1.4, 1.2, 3.4))]
-    rings = [vsec(z, p) for z, p in st]
-    L.loft(g, rings, Z, cap0="body", cap1="body")
-    loft_line(g, rings, 2, 0.4, 1, 2, 0.08)
-    loft_line(g, rings, 4, 0.6, 1, 2, 0.08)
-    loft_line(g, rings, 1, 0.5, 1, 2, 0.04, kind="flow")
-    loft_line(g, rings, 5, 0.5, 1, 2, 0.04, kind="flow")
-    loft_line(g, rings, 3, 0.5, 1, 3, 0.04, kind="flow")
-    # Glass nose.
-    q = quad(rings, 0, 3)
-    n = P.quad_normal(q, (0, 1, -1))
-    P.disc(g, [P.on_quad(*q, s, t) for s, t in ((0.1, 0.1), (0.9, 0.1), (0.9, 0.9),
-                                                 (0.1, 0.9))], n, mat=LIGHT, glow=0.05)
-    # Rear ramp outline.
-    P.accent(g, [(-1.0, 0.75, 7.0), (1.0, 0.75, 7.0), (0.9, 2.9, 7.0), (-0.9, 2.9, 7.0)], Z,
-             0.07, closed=True, glow=0.06)
-    for s in (-1, 1):
-        # Stub wing and an engine nacelle along it.
-        P.extrude(g, [(s * 1.6, 3.0, -1.8), (s * 3.2, 3.0, -1.4), (s * 3.2, 3.0, 1.6),
-                      (s * 1.6, 3.0, 2.2)], (0, 0.25, 0))
-        o = (s * 3.6, 3.15, -2.6)
-        P.lathe(g, o, Z, [(0, 0.4), (0.4, 0.62), (4.4, 0.62), (5.0, 0.48)], n=10, cap0="body",
-                cap1=LIGHT)
-        P.lathe(g, o, Z, [(0.6, 0.63), (0.75, 0.63)], n=10, mats="accent", cap0=None, cap1=None)
-        P.lathe(g, o, Z, [(4.0, 0.63), (4.15, 0.63)], n=10, mats="accent", cap0=None, cap1=None)
-        # Gun sponson (the ball mount sits at (s 3.6, 1.9, 0.5)).
-        x0, x1 = sorted((s * 1.7, s * 3.2))
-        L.box(g, (x0, 1.5, -0.3), (x1, 1.6, 1.3))
-        P.accent(g, [(s * 3.2, 1.55, -0.2), (s * 3.2, 1.55, 1.2)], (s, 0, 0), 0.05, glow=0.04)
-        # Side door outline and windows.
-        P.accent(g, [(s * 1.8, 0.9, -2.8), (s * 1.8, 0.9, -1.2), (s * 1.8, 2.8, -1.2),
-                     (s * 1.8, 2.8, -2.8)], (s, 0, 0), 0.06, closed=True, glow=0.05)
-        for z0 in (1.6, 3.0):
-            P.disc(g, [(s * 1.8, 2.3, z0), (s * 1.8, 2.3, z0 + 0.9), (s * 1.8, 2.75, z0 + 0.9),
-                       (s * 1.8, 2.75, z0)], (s, 0, 0), glow=0.04)
-        # Landing struts and pads.
+    st = [(-7.05, [(0.3, 1.7), (0.52, 1.85), (0.48, 2.2), (0.26, 2.36)]),
+          (-6.5, [(0.8, 1.2), (1.2, 1.5), (1.15, 2.6), (0.7, 3.0)]),
+          (-5.5, [(1.2, 0.75), (1.7, 1.2), (1.65, 2.9), (1.1, 3.45)]),
+          (4.6, [(1.25, 0.65), (1.8, 1.1), (1.75, 3.0), (1.2, 3.6)]),
+          (7.0, [(1.0, 1.3), (1.4, 1.6), (1.35, 2.95), (0.9, 3.4)])]
+    rings = [sec(z, h) for z, h in st]
+    nose = ["body", ARMOR, ARMOR, ARMOR, "body"]
+    hold = ["body", ARMOR, ARMOR, "body", "body"]
+    s = skin(g, rings, sym([nose, nose, hold, hold]), cap0=METAL, cap1=ARMOR)
+    SIDE_R, UP_R, TOP, UP_L, SIDE_L = 1, 2, 3, 4, 5
+    # Flight deck: glass round the nose and over it, a sensor under the chin, landing lamps.
+    for k in (0, 1):
+        s.panel(g, k, TOP, 0.06, 0.1, 0.94, 0.92, h=0.02, rim=0.05, mat_in=GLASS, floor=0.25)
+        for e in (UP_R, UP_L):
+            s.panel(g, k, e, 0.1, 0.1, 0.9, 0.92, h=0.02, rim=0.05, mat_in=GLASS, floor=0.25)
+    for e, a, b in ((SIDE_R, 0.5, 0.95), (SIDE_L, 0.05, 0.5)):
+        s.panel(g, 1, e, a, 0.2, b, 0.9, h=0.016, rim=0.04, mat_in=GLASS, floor=0.25)
+    P.lathe(g, (0, 0.95, -5.9), Y, [(0, 0.1), (0.1, 0.26), (0.26, 0.3), (0.4, 0.2)], n=8,
+            mats=[METAL, GLASS, ARMOR], cap0=METAL, cap1=None)
+    for x in (-0.6, 0.6):
+        lamp(g, (x * 1.3, 1.5, -6.55), (0, -0.4, -1), 0.1, depth=0.06)
+    # The hold: doors of team paint, windows, a team line under the roof's edge.
+    for e, sx in ((SIDE_R, 1), (SIDE_L, -1)):
+        lo, hi = (0.0, 1.0) if sx > 0 else (1.0, 0.0)
+
+        def u(v, lo=lo, hi=hi):
+            return lo + (hi - lo) * v
+        s.panel(g, 2, e, u(0.05), 0.2, u(0.93), 0.37, h=0.018, rim=0.045, mat=ARMOR, mat_in=PAINT,
+                floor=0.4)
+        s.panel(g, 2, e, u(0.5), 0.245, u(0.8), 0.325, h=0.03, rim=0.03, mat=ARMOR, mat_in=GLASS,
+                floor=0.7)
+        for t0 in (0.06, 0.72, 0.84):
+            s.panel(g, 2, e, u(0.55), t0, u(0.85), t0 + 0.09, h=0.016, rim=0.035, mat_in=GLASS,
+                    floor=0.25)
+        s.panel(g, 2, e, u(0.08), 0.42, u(0.45), 0.56, h=0.012, rim=0.04, mat_in="body")
+        s.line(g, 2, e, (u(0.965), 0.02), (u(0.965), 0.98), 0.05, glow=0.05)
+        s.bolts(g, 2, e, (u(0.5), 0.185), (u(0.5), 0.385), 2, r=0.03, ends=True)
+        s.decal(g, 2, e, [(u(0.1), 0.6), (u(0.42), 0.6), (u(0.42), 0.68), (u(0.1), 0.68)],
+                h=0.006)
+    # Four lift fans on pylons from the shoulders.
+    for sx in (-1, 1):
+        for z in (-2.2, 3.6):
+            slab(g, [(sx * 1.5, 3.0, z - 0.55), (sx * 2.55, 3.0, z - 0.4), (sx * 2.55, 3.0, z + 0.4),
+                     (sx * 1.5, 3.0, z + 0.55)], Y, 0.26, ARMOR, bevel=0.07)
+            lift_pod(g, (sx * 3.3, 3.0, z))
+        # The gunner's sponson (the ball mount sits at (sx 3.6, 1.9, 0.5)): a braced arm.
+        xa, xb = sorted((sx * 1.7, sx * 3.25))
+        P.bevel_box(g, (xa, 1.42, -0.2), (xb, 1.6, 1.2), 0.04, mat="body", mats={"+y": ARMOR})
+        P.tube(g, (sx * 1.75, 0.95, 0.5), (sx * 3.1, 1.45, 0.5), 0.06, n=5, mat=METAL)
+        P.lathe(g, (sx * 3.6, 1.42, 0.5), Y, [(0, 0.3), (0.05, 0.42), (0.1, 0.42)], n=10,
+                mats=[ARMOR, METAL], cap0=ARMOR, cap1="body")
+        handle(g, (sx * 2.0, 1.6, 1.15), (sx * 3.1, 1.6, 1.15), Y, h=0.5, r=0.025)
+        # Landing gear: struts on pads.
         for z in (-4.5, 4.0):
-            P.tube(g, (s * 1.3, 0.05, z), (s * 1.1, 0.7, z), 0.09, n=6)
-            P.lathe(g, (s * 1.3, 0.0, z), Y, [(0, 0.3), (0.06, 0.3)], n=6)
-    # Tail fin.
-    P.extrude(g, [(0, 3.5, 4.4), (0, 3.5, 6.8), (0, 3.95, 6.9), (0, 3.95, 5.6)], (0.1, 0, 0))
-    P.accent(g, [(0.11, 3.75, 5.0), (0.11, 3.75, 6.6)], X, 0.05, glow=0.04)
+            P.tube(g, (sx * 1.3, 0.05, z), (sx * 1.1, 0.75, z), 0.09, n=6, mat=METAL)
+            P.tube(g, (sx * 1.3, 0.4, z), (sx * 1.25, 1.0, z + 0.5), 0.05, n=5, mat=METAL)
+            P.lathe(g, (sx * 1.3, 0.0, z), Y, [(0, 0.32), (0.06, 0.32), (0.1, 0.16)], n=8,
+                    mats=METAL, cap0=METAL, cap1=METAL)
+        # Engines' exhausts at the tail's shoulders.
+        nozzle(g, (sx * 1.15, 2.9, 6.3), (sx * 0.25, 0.1, 1), 0.3, depth=0.35, n=8)
+    # Roof: a spine with the engines' intakes, aerials.
+    P.bevel_box(g, (-0.6, 3.55, -3.5), (0.6, 3.82, 4.4), 0.1, mat=ARMOR)
+    for z in (-2.2, 0.6, 3.4):
+        P.vent(g, (0, 3.82, z), Y, 0.8, 1.2, slats=4, depth=0.03, mat="body", mat_in=HEAT, up=NZ)
+    antenna(g, (0.8, 3.5, -4.6), 0.4)
+    P.bevel_box(g, (-0.08, 3.45, -5.2), (0.08, 3.75, -4.7), 0.02, mat=METAL)
+    # Stern: the ramp with its rams, lamps, a fin tipped in team paint.
+    P.panel_inset(g, [(-1.0, 1.4, 7.0), (1.0, 1.4, 7.0), (0.95, 2.85, 7.0), (-0.95, 2.85, 7.0)],
+                  Z, h=0.03, rim=0.07, mat=ARMOR, mat_in="body", floor=0.35)
+    strip(g, [(-0.8, 3.02, 7.0), (0.8, 3.02, 7.0)], Z, 0.06, glow=0.05)
+    hazard(g, (-0.8, 1.5, 7.0), (0.8, 1.5, 7.0), Z, (0, 0.16, 0), count=5, h=0.012)
+    for sx in (-1, 1):
+        P.tube(g, (sx * 1.1, 1.5, 6.6), (sx * 1.02, 2.6, 7.02), 0.05, n=5, mat=METAL)
+        P.disc(g, P.rect_on((sx * 1.15, 2.3, 7.0), Z, 0.14, 0.5), Z, glow=0.05)
+    nrm, poly = fin(g, (0, 3.5, 4.5), Y, [(0, 0), (2.4, 0), (2.5, 0.55), (1.3, 0.55)], 0.1,
+                    tip=0.16)
+    for sgn in (-1, 1):
+        strip(g, [L.add(P.lerp(poly[0], poly[3], 0.45), L.mul(nrm, sgn * 0.052)),
+                  L.add(P.lerp(poly[1], poly[2], 0.45), L.mul(nrm, sgn * 0.052))],
+              L.mul(nrm, sgn), 0.05, glow=0.04)
     part("dropship_hull", g)
-    # Ball mount (pivot frame).
+    # The gunners' ball mounts (pivot frame) and their guns.
     g = L.Geo()
     P.lathe(g, (0, -0.4, 0), Y, [(0, 0.15), (0.15, 0.36), (0.45, 0.4), (0.7, 0.3), (0.8, 0.1)],
-            n=8)
-    P.accent(g, P.circle((0, 0.05, 0), Y, 0.41, 8), Y, 0.04, closed=True, glow=0.04)
-    part("dropship_turret", g)
+            n=10, mats=[METAL, ARMOR, ARMOR, ARMOR], cap0=METAL, cap1=ARMOR)
+    strip(g, P.circle((0, 0.05, 0), Y, 0.41, 10), Y, 0.035, closed=True, glow=0.04)
+    P.bevel_box(g, (-0.16, 0.0, -0.44), (0.16, 0.2, -0.3), 0.02, mat="body", mats={"-z": GLASS})
+    part("dropship_turret", g, smooth=40)
     g = L.Geo()
-    L.box(g, (-0.13, -0.11, -0.4), (0.13, 0.11, 0.2))
-    gun(g, (0, 0, -0.4), [(0, 0.07), (0.9, 0.055)], n=6, rings=((0.25, 0.075),))
-    part("dropship_barrel", g)
+    machine_gun(g, 1.3, box=False, grips=False)
+    part("dropship_barrel", g, smooth=40)
     L_MUZZLES.append(("dropship_muzzle", (0, 0, -1.3)))
 
 
