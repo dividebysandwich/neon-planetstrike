@@ -1055,14 +1055,20 @@ pub struct GunOption {
 impl VehicleKind {
     /// The main gun's choices (gun 0's): the standard one first. One choice: none to make.
     pub fn gun_options(self) -> Vec<GunOption> {
-        let std = |name| {
-            let g = self.spec().guns[0];
-            GunOption {
+        // (A vehicle without a gun, the bus, has the one empty choice.)
+        let std = |name| match self.spec().guns.first() {
+            Some(g) => GunOption {
                 name,
                 ammo: g.ammo,
                 interval: g.interval,
                 ammo_max: g.ammo_max,
-            }
+            },
+            None => GunOption {
+                name: "None",
+                ammo: Ammo::Chaingun,
+                interval: 1.0,
+                ammo_max: 0,
+            },
         };
         match self {
             VehicleKind::LightTank => vec![
@@ -1148,5 +1154,21 @@ impl VehicleKind {
             gs.ammo_max = o.ammo_max;
         }
         gs
+    }
+}
+
+#[cfg(test)]
+mod loadout_tests {
+    use super::*;
+
+    #[test]
+    fn every_vehicle_has_a_valid_standard_loadout() {
+        for k in VehicleKind::ALL {
+            assert!(!k.gun_options().is_empty(), "{k:?}");
+            assert!(k.loadout_valid(VehicleLoadout {
+                weapon: 0,
+                defense: k.defenses()[0],
+            }));
+        }
     }
 }
