@@ -33,14 +33,35 @@ impl MaterialExtension for HullExt {
 
 pub type HullMaterial = ExtendedMaterial<StandardMaterial, HullExt>;
 
-/// The shared structure materials: walls and buildings (big panels), floors, furniture.
+/// The shared structure materials: the compound's walls (big panels), floors, furniture, the
+/// buildings' lighter cladding, matte roofs, the railings' bare metal, the stairwells' warm
+/// plating.
 #[derive(Resource, Clone)]
 pub struct Hulls {
     pub wall: Handle<HullMaterial>,
     pub floor: Handle<HullMaterial>,
     pub decor: Handle<HullMaterial>,
+    pub building: Handle<HullMaterial>,
+    pub roof: Handle<HullMaterial>,
+    pub metal: Handle<HullMaterial>,
+    pub stairwell: Handle<HullMaterial>,
     /// The bases' windows: dark, glossy glass.
     pub glass: Handle<HullMaterial>,
+}
+
+impl Hulls {
+    /// The bases' bodies' materials, in the order src/bases.rs sorts them.
+    pub fn surfaces(&self) -> [&Handle<HullMaterial>; 7] {
+        [
+            &self.wall,
+            &self.floor,
+            &self.decor,
+            &self.building,
+            &self.roof,
+            &self.metal,
+            &self.stairwell,
+        ]
+    }
 }
 
 pub fn hull(base: Color, panel: f32, roughness: f32, metallic: f32) -> HullMaterial {
@@ -96,6 +117,10 @@ fn make(mut commands: Commands, mut mats: ResMut<Assets<HullMaterial>>) {
         wall: mats.add(hull(Color::linear_rgb(0.085, 0.09, 0.1), 2.0, 0.6, 0.25)),
         floor: mats.add(hull(Color::linear_rgb(0.06, 0.062, 0.07), 1.5, 0.75, 0.1)),
         decor: mats.add(hull(Color::linear_rgb(0.1, 0.1, 0.105), 0.6, 0.5, 0.4)),
+        building: mats.add(hull(Color::linear_rgb(0.125, 0.13, 0.14), 1.4, 0.55, 0.3)),
+        roof: mats.add(hull(Color::linear_rgb(0.05, 0.052, 0.058), 3.0, 0.85, 0.05)),
+        metal: mats.add(hull(Color::linear_rgb(0.3, 0.31, 0.33), 0.4, 0.35, 0.85)),
+        stairwell: mats.add(hull(Color::linear_rgb(0.135, 0.12, 0.105), 1.0, 0.6, 0.3)),
         glass: mats.add(hull(Color::linear_rgb(0.015, 0.03, 0.045), 1.75, 0.08, 0.8)),
     });
 }

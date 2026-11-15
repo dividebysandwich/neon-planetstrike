@@ -323,9 +323,6 @@ fn push_prism(m: &mut MeshData, c: &Collider) {
     push_poly(m, &rev, Vec3::Y);
 }
 
-/// A base's structure: bodies by kind (walls, floors, furniture), the windows' glass, and trims
-/// along the tops of walls and buildings, round the furniture, on the stairs' nosings and
-/// wherever the architecture's details put them.
 /// The canyon caves' alien dress on a wall or a building's side (`min`..`max`): tapered ribs up
 /// both long faces every `every` metres with a vein of team light up each, and (the compound's
 /// walls) a spire at each end of the run.
@@ -419,30 +416,103 @@ fn alien_ribs(
     }
 }
 
-fn structure(layout: &BaseLayout, alien: bool) -> ([MeshData; 3], MeshData, MeshData) {
-    let mut body: [MeshData; 3] = Default::default();
+/// A railing over the thin box `min`..`max` (its collider): posts, a top rail with a lit strip
+/// under it, a mid rail and a kick plate; in the canyon caves bone-like spikes under one rail.
+fn push_rail(m: &mut MeshData, trim: &mut MeshData, min: Vec3, max: Vec3, alien: bool) {
+    let along_x = max.x - min.x >= max.z - min.z;
+    let (u0, u1) = if along_x {
+        (min.x, max.x)
+    } else {
+        (min.z, max.z)
+    };
+    let v = if along_x {
+        (min.z + max.z) / 2.0
+    } else {
+        (min.x + max.x) / 2.0
+    };
+    let at = |u: f32, y: f32, dv: f32| {
+        if along_x {
+            Vec3::new(u, y, v + dv)
+        } else {
+            Vec3::new(v + dv, y, u)
+        }
+    };
+    let bar = |m: &mut MeshData, u0: f32, u1: f32, y0: f32, y1: f32, w: f32| {
+        let (a, b) = (at(u0, y0, -w), at(u1, y1, w));
+        push_box(m, a.min(b), a.max(b));
+    };
+    let (y0, y1) = (min.y, max.y);
+    let len = u1 - u0;
+    let n = (len / 2.0).ceil().max(1.0) as usize;
+    for k in 0..=n {
+        let u = (u0 + len * k as f32 / n as f32).clamp(u0 + 0.04, u1 - 0.04);
+        if alien {
+            // A spike leaning up to the rail.
+            let foot = [
+                at(u - 0.1, y0, -0.07),
+                at(u + 0.1, y0, -0.07),
+                at(u + 0.1, y0, 0.07),
+                at(u - 0.1, y0, 0.07),
+            ];
+            let tip = [
+                at(u - 0.03, y1 + 0.25, -0.02),
+                at(u + 0.03, y1 + 0.25, -0.02),
+                at(u + 0.03, y1 + 0.25, 0.02),
+                at(u - 0.03, y1 + 0.25, 0.02),
+            ];
+            push_detail(
+                m,
+                &[
+                    foot[0], foot[1], foot[2], foot[3], tip[0], tip[1], tip[2], tip[3],
+                ],
+            );
+        } else {
+            bar(m, u - 0.035, u + 0.035, y0, y1 - 0.05, 0.035);
+        }
+    }
+    bar(m, u0, u1, y1 - 0.06, y1, 0.055);
+    bar(trim, u0 + 0.05, u1 - 0.05, y1 - 0.1, y1 - 0.065, 0.045);
+    if !alien {
+        let mid = (y0 + y1) / 2.0;
+        bar(m, u0, u1, mid - 0.025, mid + 0.025, 0.02);
+        bar(m, u0, u1, y0, y0 + 0.12, 0.012);
+    }
+}
+
+/// A base's structure: bodies by surface (`SURFACES`: walls, floors, furniture, buildings,
+/// roofs, bare metal, stairwells), the windows' glass, and trims along the tops of walls and
+/// buildings, round the furniture, on the stairs' nosings, under the railings and wherever the
+/// architecture's details put them.
+fn structure(layout: &BaseLayout, alien: bool) -> ([MeshData; SURFACES], MeshData, MeshData) {
+    let mut body: [MeshData; SURFACES] = Default::default();
     let mut glass = MeshData::default();
     let mut trim = MeshData::default();
     for (c, style) in layout.colliders.iter().zip(&layout.styles) {
-        // (The turrets' pillars are drawn with the turrets.)
-        if matches!(style, Style::Mount) {
-            continue;
-        }
         let k = match style {
+            // (The turrets' pillars are drawn with the turrets.)
+            Style::Mount => continue,
             Style::Floor | Style::Ramp | Style::Interior => 1,
-            Style::Decor => 2,
+            Style::Decor | Style::Cover => 2,
+            Style::Building => 3,
+            Style::Roof | Style::Canopy => 4,
+            Style::Rail => 5,
+            Style::Stairwell => 6,
             _ => 0,
         };
         match *c {
+            Collider::Box { min, max } if matches!(style, Style::Rail) => {
+                push_rail(&mut body[k], &mut trim, min, max, alien);
+            }
             Collider::Box { min, max } => {
                 push_box(&mut body[k], min, max);
                 let e = 0.03;
                 let band = match style {
-                    Style::Wall | Style::Building => Some(0.2),
+                    Style::Wall | Style::Building | Style::Bastion => Some(0.2),
+                    Style::Stairwell | Style::Gatehouse => Some(0.14),
                     Style::Parapet => Some(0.1),
-                    Style::Roof => Some(0.08),
+                    Style::Roof | Style::Canopy => Some(0.08),
                     Style::Interior => Some(0.06),
-                    Style::Decor => Some(0.05),
+                    Style::Decor | Style::Cover => Some(0.05),
                     _ => None,
                 };
                 if let Some(b) = band {
@@ -451,12 +521,16 @@ fn structure(layout: &BaseLayout, alien: bool) -> ([MeshData; 3], MeshData, Mesh
                         Vec3::new(min.x - e, max.y - b, min.z - e),
                         Vec3::new(max.x + e, max.y - b * 0.4, max.z + e),
                     );
-                    if alien && matches!(style, Style::Wall | Style::Building) {
+                    let ribbed = matches!(
+                        style,
+                        Style::Wall | Style::Building | Style::Bastion | Style::Stairwell
+                    );
+                    if alien && ribbed {
                         // Ribs and veins up the wall (instead of bands).
-                        let wall = matches!(style, Style::Wall);
+                        let wall = matches!(style, Style::Wall | Style::Bastion);
                         let every = if wall { 3.5 } else { 4.0 };
-                        alien_ribs(&mut body[0], &mut trim, min, max, every, wall);
-                    } else if matches!(style, Style::Wall) {
+                        alien_ribs(&mut body[k], &mut trim, min, max, every, wall);
+                    } else if matches!(style, Style::Wall | Style::Bastion) {
                         // Bands up the wall.
                         for h in [3.0, 7.0] {
                             if min.y + h < max.y - 1.0 {
@@ -507,6 +581,9 @@ fn structure(layout: &BaseLayout, alien: bool) -> ([MeshData; 3], MeshData, Mesh
     }
     (body, glass, trim)
 }
+
+/// How many surfaces a base's bodies are sorted into (`Hulls::surfaces`' order).
+const SURFACES: usize = 7;
 
 /// A model's parts spawned under `parent` (bodies plated); team-tinted parts get `tint`.
 pub fn spawn_parts(
@@ -701,7 +778,7 @@ fn build(
             if m.is_empty() {
                 continue;
             }
-            let mat = [&hulls.wall, &hulls.floor, &hulls.decor][k].clone();
+            let mat = hulls.surfaces()[k].clone();
             commands.spawn((
                 Mesh3d(meshes.add(m.to_mesh())),
                 MeshMaterial3d(mat),
