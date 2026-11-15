@@ -569,6 +569,41 @@ fn the_plans_of_some_seeds() {
     }
 }
 
+#[test]
+#[ignore]
+fn the_bases_of_a_world() {
+    // PS_WORLD_SEED=42 cargo test -p ps-sim the_bases_of_a_world -- --ignored --nocapture:
+    // every base of that world, its plan and where it stands (for looking at them).
+    use crate::worldgen::{WorldDef, WorldParams};
+    let seed = std::env::var("PS_WORLD_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(42);
+    let def = WorldDef::generate(WorldParams {
+        seed,
+        ..Default::default()
+    });
+    for (ci, c) in def.continents.iter().enumerate() {
+        let map = crate::map::ContinentMap::build(std::sync::Arc::new(c.clone()), false);
+        for (bi, l) in map.bases.iter().enumerate() {
+            println!(
+                "{ci},{bi} {:?} {} {:?} plan {} flip {} storeys {} quarter {} at {:.1} {:.1} {:.1} points {}",
+                c.theme,
+                c.bases[bi].name,
+                l.kind,
+                l.variant,
+                l.flip,
+                l.storeys,
+                l.quarter,
+                l.center.x,
+                l.center.y,
+                l.center.z,
+                l.points.len()
+            );
+        }
+    }
+}
+
 const GOLDEN: [u64; 16] = [
     0x344f74f244b5305f,
     0x38a35eb79cd5b81a,

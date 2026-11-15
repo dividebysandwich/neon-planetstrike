@@ -65,15 +65,14 @@ pub(in crate::base) fn plan(b: &mut Builder, cx: &mut Ctx) {
     join(b, "back_out", "back_gate_in");
     // Capture points: A in the front yard on the way in, B in the core room (where the console
     // would be), C at the back of the yard.
-    let c_point: ((f32, f32), (f32, f32), Vec<(f32, f32)>);
-    match cx.variant {
+    let c_point = match cx.variant {
         0 => {
             yard(b, &[(-34.0, -36.0)], &[(34.0, -36.0)], (42.0, 34.0));
-            c_point = (
+            (
                 (-38.0, 36.0),
                 (-35.5, 33.5),
                 vec![(-30.0, -12.0), (-30.0, 24.0)],
-            );
+            )
         }
         1 => {
             let out = annex(b, (44.0, 4.0, 58.0, 16.0), 2, 1);
@@ -81,11 +80,11 @@ pub(in crate::base) fn plan(b: &mut Builder, cx: &mut Ctx) {
             b.link(out, side);
             yard(b, &[(-36.0, -40.0)], &[(36.0, -40.0)], (46.0, 40.0));
             canopy(b, (-28.0, -44.0, -22.0, -36.0), 4.2);
-            c_point = (
+            (
                 (30.0, 30.0),
                 (27.5, 27.5),
                 vec![(14.0, -10.0), (14.0, 26.0)],
-            );
+            )
         }
         _ => {
             shed(b, (-58.0, -14.0, -44.0, 0.0), 3);
@@ -96,13 +95,13 @@ pub(in crate::base) fn plan(b: &mut Builder, cx: &mut Ctx) {
                 cover(b, x, 0.0, 4.0, true);
             }
             yard(b, &[(-38.0, -38.0)], &[(38.0, -38.0)], (40.0, 42.0));
-            c_point = (
+            (
                 (-40.0, 38.0),
                 (-37.5, 35.5),
                 vec![(-26.0, -12.0), (-26.0, 26.0)],
-            );
+            )
         }
-    }
+    };
     if cx.points {
         point(
             b,

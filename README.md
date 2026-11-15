@@ -72,19 +72,39 @@ The start menu offers an **Offline world** (the server runs inside the game, wit
 
 ## Bases
 
-A walled compound with walkable walls (stairs up inside; buttressed outside, pylons flanking the
-gateways), vehicle gateways with **forcefields**
-that let infantry and the owners' vehicles through, and big **wall turrets** raised on pillars
+A walled compound with walkable walls: a parapet along the outside and a **railing** along the
+inside (too high to walk over, low enough to jump), reached by enclosed **stair towers** whose
+top landing is level with the walkway, a door straight ahead. **Bastions** stand out from the
+corners, and the walls carry on over the vehicle gateways under a gallery, so the walkway runs
+all the way round. The gateways have **forcefields**
+that let infantry and the owners' vehicles through, and big **wall turrets** stand on pillars
 over the walls: automatic (at 30 % of the rate of fire), or manned by a player (E) at the full
-rate, seen from the turret's own sight. Turrets can be destroyed and repaired. The main building, on one or two
+rate, seen from the turret's own sight (getting out puts the gunner on the walkway beside
+it). Turrets can be destroyed and repaired. The main building, on one or two
 floors, has the **spawn room** behind a forcefield only the owners pass, **equipment
-terminals**, **medical terminals**, offices and the **core room** with the console. A
+terminals**, **medical terminals**, offices and the **core room** with the console, and
+enclosed stairs in its corner up to every floor and out onto the roof through their head
+house. Nowhere one can walk to has an open drop: stairwells are walled, floors round them
+railed, roofs have parapets. A
 **generator** powers the forcefields, turrets and vehicle pad: destroy it to take them down,
 repair it to bring them back. In the yard: the **vehicle pad** with its terminal, the **rearm
 pad**, and the **resource silo**. **Bars** float over what is fought over: the generator's and
 the turrets' health (near, or while damaged), each capture point's (its letter over it in its
 holder's colour, the bar filling in the taker's, flashing while contested) and a hack's or
 capture's progress over the console (or the base).
+
+**Plans**: bases of a kind aren't alike. Each takes one of three floor plans from the world's
+seed, mirrored left to right or not:
+
+| kind | plans |
+|---|---|
+| Outpost | the **keep** (main building in the middle, four bastions, stair towers on the side walls); the **split yard** (the building to one side, the generator in its own annex by the far wall, a canopy over the vehicle terminal); the **gate court** (the building set back behind a forecourt, an open shed and the comms hut by the side walls, cover by the door) |
+| Center base | the **citadel** (a big keep inside an inner bailey: four corner walls with their own railed walkways and stairs); the **twin halls** (command hall and barracks joined by a covered walk; the spawn tubes are in the barracks); the **quarters** (keep, generator annex, shed and comms hut in the yard's quarters) |
+| Sanctuary home | the **parade ground** (headquarters at the back of a wide yard, sheds either side); the **twin barracks** (a command building between two barracks with the spawn tubes); the **depot** (rows of open sheds along the back wall) |
+| Tower | closed walls with slits; the same with a railed **balcony** round the top floor; an **open deck** for the top floor between corner piers, the console a floor lower, four turrets on the roof |
+
+`PS_WORLD_SEED=42 cargo test -p ps-sim the_bases_of_a_world -- --ignored --nocapture` lists a
+world's bases with their plans and where they stand.
 
 **Resources**: turrets firing and vehicles ordered use up a base's resources. A base that runs
 dry goes neutral (white), and nobody spawns there until its silo is refilled and it is
