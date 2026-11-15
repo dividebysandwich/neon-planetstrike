@@ -160,6 +160,10 @@ pub type Ghost<'a> = (
 );
 
 /// The model of a weapon held (the blaster when there is none).
+/// The gun in a player's hand (every avatar's): for what comes out of its muzzle (src/fx.rs).
+#[derive(Component)]
+pub struct GunOf(pub PlayerId);
+
 pub fn weapon_model(models: &Models, w: Weapon) -> Model {
     let name = weapon_mesh(w);
     if models.has(name) {
@@ -286,7 +290,7 @@ fn spawn_avatar(
         .map(|t| t.pieces.iter().map(|m| part(commands, m, root)).collect())
         .unwrap_or_default();
     let gun = commands
-        .spawn((Transform::IDENTITY, Visibility::default()))
+        .spawn((Transform::IDENTITY, Visibility::default(), GunOf(p.id)))
         .id();
     let guns = Weapon::ALL
         .iter()

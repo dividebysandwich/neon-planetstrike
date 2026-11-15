@@ -214,6 +214,8 @@ vec3 tone(vec3 c) {
 
 // How much the shots light up a point (0..1): each within SHOT_REACH metres, more nearer.
 const float SHOT_REACH = 4.5;
+// How much brighter the neon right at a shot is for its moment.
+const float SHOT_FLARE = 1.6;
 // How bright the arena's lights are at `p` by the breakers' dark quarters (soft across the
 // centre lines).
 const float ZONE_DIM = 0.015;
@@ -229,8 +231,9 @@ float shot_light(vec3 p) {
     for (int i = 0; i < 8; i++) {
         vec4 s = u_shots[i];
         if (s.w > 0.0) {
-            float k = max(1.0 - distance(p, s.xyz) / SHOT_REACH, 0.0);
-            l += s.w * k * k;
+            // (A strength over 1 reaches that much farther: a blast's.)
+            float k = max(1.0 - distance(p, s.xyz) / (SHOT_REACH * max(s.w, 1.0)), 0.0);
+            l += min(s.w, 1.0) * k * k;
         }
     }
     return min(l, 1.0);
@@ -247,6 +250,10 @@ void main() {
         lit = max(lit, shot_light(v_world));
     }
     vec3 col = neon_colour(v_world) * mix(1.0, lit, u_extra.z);
+    // Every neon near a shot or a blast flares up with it (the nearest is first: none, no more).
+    if (u_shots[0].w > 0.0) {
+        col *= 1.0 + SHOT_FLARE * shot_light(v_world);
+    }
 #ifdef GLOW
     if (u_extra.x > 3.5) {
         float a = cloak(v_world, v_normal, normalize(v_eye - v_world), u_time);

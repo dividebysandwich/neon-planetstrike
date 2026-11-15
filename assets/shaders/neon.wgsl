@@ -48,6 +48,8 @@ struct Neon {
 
 // How much the shots light up a point (0..1): each within SHOT_REACH metres, more nearer.
 const SHOT_REACH: f32 = 4.5;
+// How much brighter the neon right at a shot is for its moment.
+const SHOT_FLARE: f32 = 1.6;
 // How bright the arena's lights are at `p` by the breakers' dark quarters (soft across the
 // centre lines).
 const ZONE_DIM: f32 = 0.015;
@@ -63,8 +65,9 @@ fn shot_light(p: vec3<f32>) -> f32 {
     for (var i = 0; i < 8; i++) {
         let s = neon.shots[i];
         if (s.w > 0.0) {
-            let k = max(1.0 - distance(p, s.xyz) / SHOT_REACH, 0.0);
-            l += s.w * k * k;
+            // (A strength over 1 reaches that much farther: a blast's.)
+            let k = max(1.0 - distance(p, s.xyz) / (SHOT_REACH * max(s.w, 1.0)), 0.0);
+            l += min(s.w, 1.0) * k * k;
         }
     }
     return min(l, 1.0);
@@ -277,7 +280,11 @@ fn shade(in: VertexOutput) -> vec4<f32> {
     if (neon.extra.z > 0.5 && lit < 0.99) {
         lit = max(lit, shot_light(in.world_position.xyz));
     }
-    let col = neon_color(in.world_position.xyz, uv, tint) * mix(1.0, lit, neon.extra.z);
+    var col = neon_color(in.world_position.xyz, uv, tint) * mix(1.0, lit, neon.extra.z);
+    // Every neon near a shot or a blast flares up with it (the nearest is first: none, no more).
+    if (neon.shots[0].w > 0.0) {
+        col *= 1.0 + SHOT_FLARE * shot_light(in.world_position.xyz);
+    }
     if (neon.params.y > 0.5 && neon.extra.x > 3.5) {
         let to_eye = normalize(view.world_position - in.world_position.xyz);
         let a = cloak(in.world_position.xyz, in.world_normal, to_eye, neon.params.z);
