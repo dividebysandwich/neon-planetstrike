@@ -625,8 +625,8 @@ fn make_palette(
         ..default()
     });
     let heat = std.add(StandardMaterial {
-        base_color: Color::linear_rgb(0.1, 0.06, 0.04),
-        emissive: LinearRgba::new(0.25, 0.06, 0.01, 1.0),
+        base_color: Color::linear_rgb(0.055, 0.034, 0.026),
+        emissive: LinearRgba::new(0.03, 0.007, 0.001, 1.0),
         perceptual_roughness: 0.4,
         metallic: 0.8,
         ..default()
