@@ -9,24 +9,35 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use ps_sim::snapshot::{VehicleSnap, vflags};
 use ps_sim::vehicle::VehicleKind;
+use ps_sim::weapons::Ammo;
 use ps_sim::{Team, VehicleId};
 
 use crate::assets::{Model, Models};
 use crate::bases::{Lamp, spawn_plated};
 use crate::game::{DrawSet, Game, Mover, alpha};
 use crate::hull::{HullMaterial, follow, vehicle_armor, vehicle_hull};
-use crate::materials::{GlowMaterial, NeonUniform, Palette, team_color};
+use crate::materials::{AccentMaterial, GlowMaterial, NeonUniform, Palette, team_color};
 
 struct VehicleView {
     root: Entity,
     /// Per gun: the turret (yaw) and barrel (pitch) entities.
     guns: Vec<(Entity, Entity)>,
-    wheels: Vec<Entity>,
+    /// Wheels (and a tracked one's road wheels and sprockets), each with its radius.
+    wheels: Vec<(Entity, f32)>,
     mast: Option<Entity>,
     engines: Vec<Entity>,
+    /// The engines' fans, and how far they have turned.
+    fans: Vec<Entity>,
+    fan_turn: f32,
+    /// Per gun: how far its barrel is pushed back by its last shot (m).
+    recoil: Vec<f32>,
+    /// The tracks' running light (its `tread` parts' own material) and which way it runs now
+    /// (`tread_gear`).
+    tread: Option<(Handle<AccentMaterial>, i8)>,
     bubble: Entity,
     team: Team,
-    spin: f32,
+    /// How far it has rolled forwards (m): what its wheels have turned by.
+    roll: f32,
     /// Its plating: the dark body's and the armour plates'.
     hull: [Handle<HullMaterial>; 2],
     beam: Option<Entity>,
@@ -43,7 +54,12 @@ pub struct VehiclesPlugin;
 impl Plugin for VehiclesPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Views>()
-            .add_systems(Update, sync.run_if(resource_exists::<Game>).in_set(DrawSet))
+            .add_systems(
+                Update,
+                sync.run_if(resource_exists::<Game>)
+                    .in_set(DrawSet)
+                    .after(crate::fx::FxSet),
+            )
             .add_systems(Update, clear.run_if(not(resource_exists::<Game>)));
     }
 }
@@ -68,6 +84,28 @@ pub fn prefix(kind: VehicleKind) -> &'static str {
     }
 }
 
+/// How far a shot of `ammo` pushes its barrel back (m; 0: not at all).
+fn kick(ammo: Ammo) -> f32 {
+    match ammo {
+        Ammo::HeavyShell | Ammo::Rail => 0.42,
+        Ammo::LightShell => 0.28,
+        Ammo::Autocannon => 0.1,
+        Ammo::Flak => 0.09,
+        Ammo::Chaingun => 0.04,
+        _ => 0.0,
+    }
+}
+
+/// Which way and how fast a track's light runs at `speed` (m/s forwards): -1, 0, 1 or 2.
+fn tread_gear(speed: f32) -> i8 {
+    match speed {
+        s if s < -0.6 => -1,
+        s if s < 0.6 => 0,
+        s if s < 8.0 => 1,
+        _ => 2,
+    }
+}
+
 fn boxy(meshes: &mut Assets<Mesh>, size: Vec3, at: Vec3) -> Model {
     Model {
         parts: vec![
@@ -89,6 +127,7 @@ fn boxy(meshes: &mut Assets<Mesh>, size: Vec3, at: Vec3) -> Model {
     }
 }
 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn spawn_vehicle(
     commands: &mut Commands,
     v: &VehicleSnap,
@@ -96,6 +135,7 @@ fn spawn_vehicle(
     palette: &Palette,
     meshes: &mut Assets<Mesh>,
     glows: &mut Assets<GlowMaterial>,
+    accents: &mut Assets<AccentMaterial>,
     hulls: &mut Assets<HullMaterial>,
 ) -> VehicleView {
     let team = Some(v.team);
@@ -103,12 +143,34 @@ fn spawn_vehicle(
         hulls.add(vehicle_hull(team_color(team) * 0.6)),
         hulls.add(vehicle_armor(team_color(team))),
     ];
+    // (A tracked one's `tread` lines get a material of their own: they run with it.)
+    let tread = matches!(v.kind.spec().motion, ps_sim::vehicle::MotionKind::Tracked).then(|| {
+        accents.add(AccentMaterial {
+            overlay: false,
+            neon: NeonUniform::flow(team_color(team), 3.0, 0.0),
+        })
+    });
     let spawn_model =
         |commands: &mut Commands, e: Entity, m: &Model, palette: &Palette, team: Option<Team>| {
+            let mut rest = m.clone();
+            if let Some(t) = &tread {
+                rest.parts.retain(|(mat, mesh)| {
+                    if mat != "tread" {
+                        return true;
+                    }
+                    commands.spawn((
+                        Mesh3d(mesh.clone()),
+                        MeshMaterial3d(t.clone()),
+                        Transform::IDENTITY,
+                        ChildOf(e),
+                    ));
+                    false
+                });
+            }
             spawn_plated(
                 commands,
                 e,
-                m,
+                &rest,
                 palette,
                 team,
                 None,
@@ -181,8 +243,10 @@ fn spawn_vehicle(
     let mut wheels = Vec::new();
     let mut mast = None;
     let mut engines = Vec::new();
+    let mut fans = Vec::new();
     match v.kind {
         VehicleKind::Rover => {
+            const WHEEL_R: f32 = 0.5;
             let wheel = get(
                 "rover_wheel",
                 boxy(meshes, Vec3::new(0.4, 1.0, 1.0), Vec3::ZERO),
@@ -197,11 +261,12 @@ fn spawn_vehicle(
                         ))
                         .id();
                     spawn_model(commands, w, &wheel, palette, team);
-                    wheels.push(w);
+                    wheels.push((w, WHEEL_R));
                 }
             }
         }
         VehicleKind::Harvester => {
+            const WHEEL_R: f32 = 0.9;
             let wheel = get(
                 "harvester_wheel",
                 boxy(meshes, Vec3::new(0.56, 1.8, 1.8), Vec3::ZERO),
@@ -216,11 +281,12 @@ fn spawn_vehicle(
                         ))
                         .id();
                     spawn_model(commands, w, &wheel, palette, team);
-                    wheels.push(w);
+                    wheels.push((w, WHEEL_R));
                 }
             }
         }
         VehicleKind::SpawnBus => {
+            const WHEEL_R: f32 = 0.7;
             let wheel = get(
                 "spawn_bus_wheel",
                 boxy(meshes, Vec3::new(0.5, 1.4, 1.4), Vec3::ZERO),
@@ -235,7 +301,7 @@ fn spawn_vehicle(
                         ))
                         .id();
                     spawn_model(commands, w, &wheel, palette, team);
-                    wheels.push(w);
+                    wheels.push((w, WHEEL_R));
                 }
             }
             let m = commands
@@ -272,7 +338,60 @@ fn spawn_vehicle(
                     .id();
                 spawn_model(commands, e, &engine, palette, team);
                 engines.push(e);
+                if models.has("vtol_fan") {
+                    let f = commands
+                        .spawn((Transform::IDENTITY, Visibility::default(), ChildOf(e)))
+                        .id();
+                    spawn_model(commands, f, &models.get("vtol_fan"), palette, team);
+                    fans.push(f);
+                }
             }
+        }
+        VehicleKind::LightTank | VehicleKind::LightAaa | VehicleKind::HeavyTank => {
+            // The running gear inside the tracks (vehicles.py: LT_TRACK, HT_TRACK): road
+            // wheels on the ground run, a sprocket at each end. (None without the models.)
+            let heavy = v.kind == VehicleKind::HeavyTank;
+            let (name, x, road, ends): (_, f32, (f32, f32, &[f32]), (f32, f32, f32)) = if heavy {
+                (
+                    "heavy_tank",
+                    1.785,
+                    (0.46, 0.38, &[-2.5, -1.5, -0.5, 0.5, 1.5, 2.5]),
+                    (0.75, 0.34, 3.3),
+                )
+            } else {
+                (
+                    "light_tank",
+                    1.29,
+                    (0.38, 0.31, &[-1.7, -0.85, 0.0, 0.85, 1.7]),
+                    (0.6, 0.3, 2.35),
+                )
+            };
+            let mut place = |mesh: String, y: f32, r: f32, zs: &[f32]| {
+                if !models.has(&mesh) {
+                    return;
+                }
+                let model = models.get(&mesh);
+                for &z in zs {
+                    for sx in [-x, x] {
+                        let w = commands
+                            .spawn((
+                                Transform::from_xyz(sx, y, z),
+                                Visibility::default(),
+                                ChildOf(root),
+                            ))
+                            .id();
+                        spawn_model(commands, w, &model, palette, team);
+                        wheels.push((w, r));
+                    }
+                }
+            };
+            place(format!("{name}_wheel"), road.0, road.1, road.2);
+            place(
+                format!("{name}_sprocket"),
+                ends.0,
+                ends.1,
+                &[-ends.2, ends.2],
+            );
         }
         _ => {}
     }
@@ -338,13 +457,17 @@ fn spawn_vehicle(
         wheels,
         mast,
         engines,
+        fans,
+        fan_turn: 0.0,
+        recoil: vec![0.0; spec.guns.len()],
+        tread: tread.map(|t| (t, 0)),
         bubble,
         team: v.team,
-        spin: 0.0,
+        roll: 0.0,
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn sync(
     mut commands: Commands,
     game: Res<Game>,
@@ -352,18 +475,40 @@ fn sync(
     mut views: ResMut<Views>,
     models: Res<Models>,
     palette: Res<Palette>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut glows: ResMut<Assets<GlowMaterial>>,
-    mut hulls: ResMut<Assets<HullMaterial>>,
+    (mut meshes, mut glows, mut accents, mut hulls): (
+        ResMut<Assets<Mesh>>,
+        ResMut<Assets<GlowMaterial>>,
+        ResMut<Assets<AccentMaterial>>,
+        ResMut<Assets<HullMaterial>>,
+    ),
+    (mut fx, local): (
+        MessageReader<crate::game::FxEvent>,
+        Option<Res<crate::fx::LocalShots>>,
+    ),
     time: Res<Time<Fixed>>,
     real: Res<Time>,
     mut transforms: Query<&mut Transform>,
     mut vis: Query<&mut Visibility>,
     sparks: Option<Res<crate::bases::BaseAssets>>,
-    view: Res<crate::seatview::SeatView>,
-    look: Option<Res<crate::desktop::Look>>,
+    (view, look): (
+        Res<crate::seatview::SeatView>,
+        Option<Res<crate::desktop::Look>>,
+    ),
 ) {
     let a = alpha(&time);
+    // Where shells and bolts left a barrel this frame (others' and one's own): the guns there
+    // recoil.
+    let mut shots: Vec<(Ammo, Vec3)> = fx
+        .read()
+        .filter_map(|e| match e.0 {
+            ps_sim::snapshot::Fx::Shot { ammo, from, .. } => Some((ammo, from)),
+            _ => None,
+        })
+        .collect();
+    if let Some(l) = &local {
+        shots.extend(l.fired.iter().copied());
+    }
+    shots.retain(|(ammo, _)| kick(*ammo) > 0.0);
     // (The one the player sits in isn't drawn from inside.)
     let inside = crate::seatview::from_inside(&view, look.as_deref())
         .then_some(view.vehicle)
@@ -405,6 +550,7 @@ fn sync(
                 &palette,
                 &mut meshes,
                 &mut glows,
+                &mut accents,
                 &mut hulls,
             )
         });
@@ -498,26 +644,63 @@ fn sync(
                 crate::bases::unload_fx(&mut commands, assets, pos + Vec3::Y * 2.5, silo);
             }
         }
+        let spec = s.kind.spec();
         for (i, &(turret, barrel)) in v.guns.iter().enumerate() {
-            if let Some(&(yaw, pitch)) = s.aim.get(i) {
-                if let Ok(mut t) = transforms.get_mut(turret) {
-                    t.rotation = Quat::from_rotation_y(yaw as f32 / 1e4);
+            let Some(g) = spec.guns.get(i) else {
+                continue;
+            };
+            let (yaw, pitch) = s
+                .aim
+                .get(i)
+                .map_or((0.0, 0.0), |a| (a.0 as f32 / 1e4, a.1 as f32 / 1e4));
+            let aim = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
+            // A shot from its muzzle kicks the barrel back; a spring returns it.
+            if !g.fixed {
+                let muzzle = pos + rot * (g.pivot + aim * Vec3::new(0.0, 0.0, -g.barrel));
+                let reach = g.barrel_gap * g.barrels as f32 * 0.5 + 2.5;
+                for (ammo, from) in &shots {
+                    if from.distance_squared(muzzle) < reach * reach {
+                        v.recoil[i] = v.recoil[i].max(kick(*ammo));
+                    }
                 }
-                if let Ok(mut t) = transforms.get_mut(barrel) {
-                    t.rotation = Quat::from_rotation_x(pitch as f32 / 1e4);
+            }
+            v.recoil[i] *= (-9.0 * dt).exp();
+            if s.aim.get(i).is_some()
+                && let Ok(mut t) = transforms.get_mut(turret)
+            {
+                t.rotation = Quat::from_rotation_y(yaw);
+            }
+            if let Ok(mut t) = transforms.get_mut(barrel) {
+                if s.aim.get(i).is_some() {
+                    t.rotation = Quat::from_rotation_x(pitch);
                 }
+                t.translation = t.rotation * Vec3::new(0.0, 0.0, v.recoil[i]);
             }
         }
         let speed = s.vel.dot(rot * Vec3::NEG_Z);
-        let wheel_r = match s.kind {
-            VehicleKind::Rover => 0.5,
-            VehicleKind::Harvester => 0.9,
-            _ => 0.7,
-        };
-        v.spin += speed / wheel_r * dt;
-        for &w in &v.wheels {
+        // The tracks' light runs the way they do (in steps: the shader's pulses would jump
+        // with a speed that slides).
+        if let Some((h, gear)) = &mut v.tread {
+            let want = tread_gear(speed);
+            if want != *gear
+                && let Some(mut m) = accents.get_mut(&*h)
+            {
+                *gear = want;
+                m.neon.extra.y = want as f32 * 2.5;
+            }
+        }
+        v.fan_turn = (v.fan_turn + (22.0 + speed.abs() * 0.4) * dt) % std::f32::consts::TAU;
+        for &f in &v.fans {
+            if let Ok(mut t) = transforms.get_mut(f) {
+                t.rotation = Quat::from_rotation_y(v.fan_turn);
+            }
+        }
+        // (Wrapped where every wheel has turned whole turns or near enough, so the angle
+        // keeps its precision on a long drive.)
+        v.roll = (v.roll + speed * dt) % 1000.0;
+        for &(w, r) in &v.wheels {
             if let Ok(mut t) = transforms.get_mut(w) {
-                t.rotation = Quat::from_rotation_x(-v.spin);
+                t.rotation = Quat::from_rotation_x(-v.roll / r);
             }
         }
         let deployed = s.flags & vflags::DEPLOYED != 0;
