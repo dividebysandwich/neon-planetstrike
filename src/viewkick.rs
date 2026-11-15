@@ -190,17 +190,54 @@ impl Punch {
 /// How much a gun kicks the view (degrees at the peak).
 fn kick_of(w: Weapon) -> f32 {
     match w {
-        Weapon::Rifle | Weapon::Volt => 0.4,
-        Weapon::Ember => 0.55,
-        Weapon::Hive => 0.32,
-        Weapon::Pistol => 0.5,
-        Weapon::Striker | Weapon::Skyhook => 1.0,
-        Weapon::Scatter => 1.2,
-        Weapon::Lance => 1.5,
+        Weapon::Rifle => 0.45,
+        Weapon::Volt => 0.4,
+        Weapon::Ember => 0.65,
+        Weapon::Hive => 0.3,
+        Weapon::Pistol => 0.6,
+        Weapon::Striker | Weapon::Skyhook => 1.2,
+        Weapon::Scatter => 1.6,
+        Weapon::Lance => 2.0,
         Weapon::Medgun | Weapon::RepairGun => 0.0,
-        Weapon::Pounder => 0.3,
-        Weapon::Mauler => 1.3,
-        Weapon::Burster => 0.6,
+        Weapon::Pounder => 0.35,
+        Weapon::Mauler => 1.6,
+        Weapon::Burster => 0.7,
+    }
+}
+
+/// How much firing shakes the view besides (0 to 1): the heavy guns on foot, and every gun
+/// of a vehicle (which doesn't kick: the seat takes it).
+fn shake_of(ammo: Ammo) -> f32 {
+    match ammo {
+        Ammo::Gun(w) => match w {
+            Weapon::Scatter | Weapon::Lance => 0.15,
+            Weapon::Striker | Weapon::Skyhook => 0.18,
+            Weapon::Mauler => 0.22,
+            Weapon::Burster => 0.08,
+            Weapon::Pounder => 0.05,
+            _ => 0.0,
+        },
+        Ammo::HeavyShell => 0.5,
+        Ammo::Rail => 0.55,
+        Ammo::LightShell => 0.35,
+        Ammo::Missile => 0.2,
+        Ammo::Rocket | Ammo::TurretBolt => 0.15,
+        Ammo::Autocannon => 0.12,
+        Ammo::Flak => 0.1,
+        Ammo::AirCannon => 0.08,
+        Ammo::Chaingun => 0.06,
+        _ => 0.0,
+    }
+}
+
+/// A vehicle's gun's kick (degrees): the big ones rock the hull.
+fn seat_kick(ammo: Ammo) -> f32 {
+    match ammo {
+        Ammo::HeavyShell | Ammo::Rail => 0.9,
+        Ammo::LightShell => 0.6,
+        Ammo::Missile | Ammo::Rocket => 0.25,
+        Ammo::Autocannon | Ammo::AirCannon | Ammo::Flak | Ammo::TurretBolt => 0.15,
+        _ => 0.0,
     }
 }
 
@@ -246,11 +283,16 @@ fn update_sway(
         }
     }
     for (ammo, _) in &shots.fired {
-        match ammo {
-            Ammo::Gun(w) => sway.punch.fire(kick_of(*w)),
-            Ammo::LightShell => sway.punch.shake(0.3),
-            Ammo::HeavyShell => sway.punch.shake(0.45),
-            _ => {}
+        let kick = match ammo {
+            Ammo::Gun(w) => kick_of(*w),
+            a => seat_kick(*a),
+        };
+        if kick > 0.0 {
+            sway.punch.fire(kick);
+        }
+        let shake = shake_of(*ammo);
+        if shake > 0.0 {
+            sway.punch.shake(shake);
         }
     }
     if let Some(v) = mover.landed.take() {

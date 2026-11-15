@@ -660,11 +660,40 @@ impl Rumble {
     }
 }
 
+/// How a gun buzzes in the hand as it fires: for how long (s), how hard, and whether in both
+/// hands (a vehicle's guns, and the launchers and heavy guns held with two).
+fn buzz_of(ammo: ps_sim::weapons::Ammo) -> Option<(f32, f32, bool)> {
+    use ps_sim::weapons::{Ammo, Weapon};
+    Some(match ammo {
+        Ammo::Gun(w) => match w {
+            Weapon::Medgun | Weapon::RepairGun => return None,
+            Weapon::Pistol => (0.03, 0.45, false),
+            Weapon::Rifle | Weapon::Volt | Weapon::Hive => (0.025, 0.35, false),
+            Weapon::Ember => (0.035, 0.45, false),
+            Weapon::Pounder => (0.025, 0.4, false),
+            Weapon::Burster => (0.04, 0.55, false),
+            Weapon::Scatter => (0.07, 0.85, true),
+            Weapon::Lance => (0.09, 0.9, true),
+            Weapon::Mauler => (0.08, 0.9, false),
+            Weapon::Striker | Weapon::Skyhook => (0.12, 0.8, true),
+        },
+        Ammo::Grenade | Ammo::Utility(_) | Ammo::Mine | Ammo::Spitfire => return None,
+        Ammo::HeavyShell | Ammo::Rail => (0.16, 1.0, true),
+        Ammo::LightShell => (0.12, 0.85, true),
+        Ammo::Rocket | Ammo::Missile => (0.1, 0.6, true),
+        Ammo::Flak | Ammo::Autocannon | Ammo::AirCannon => (0.04, 0.5, true),
+        Ammo::TurretBolt => (0.05, 0.55, true),
+        Ammo::Chaingun => (0.025, 0.35, true),
+    })
+}
+
 /// Buzzes on hits taken (harder in the hand on the side they came from) and given (in the gun
-/// hand: harder on the head, a double tap on a kill).
+/// hand: harder on the head, a double tap on a kill), and as one's own guns fire (in the gun
+/// hand; the big ones and a vehicle's in both).
 #[allow(clippy::too_many_arguments)]
 fn haptics(
     mut rumble: ResMut<Rumble>,
+    shots: Option<Res<crate::fx::LocalShots>>,
     mut events: MessageReader<crate::game::GameEvent>,
     game: Res<Game>,
     vr: Res<VrState>,
@@ -676,6 +705,14 @@ fn haptics(
     let gun = vr
         .drawn
         .map_or_else(|| gun_side(&args, &settings), |(h, _)| h);
+    for (ammo, _) in shots.iter().flat_map(|s| s.fired.iter()) {
+        if let Some((secs, amp, both)) = buzz_of(*ammo) {
+            rumble.fade(gun, 0.0, secs, amp);
+            if both {
+                rumble.fade(1 - (gun & 1), 0.0, secs, amp * 0.7);
+            }
+        }
+    }
     for e in events.read() {
         match e.0 {
             ps_sim::SimEvent::Hurt {

@@ -21,7 +21,7 @@ use ps_sim::vehicle::VehicleKind;
 use ps_sim::weapons::{Ammo, ShotKind, Weapon};
 use ps_sim::{PlayerId, Team, VehicleId, look_dir};
 
-use crate::audio::Casing;
+use crate::audio::{Casing, Whiz};
 use crate::game::{FxEvent, Game, LocalCmd, Mover};
 use crate::materials::{
     AccentMaterial, GlowMaterial, NeonGlobals, NeonUniform, ParticleMaterial, SHOT_LIGHTS,
@@ -39,6 +39,9 @@ struct Projectile {
     vel: Vec3,
     gravity: f32,
     left: f32,
+    team: Option<Team>,
+    /// It has gone by the viewer's head (`Whiz`).
+    whizzed: bool,
 }
 
 #[derive(Component)]
@@ -98,6 +101,11 @@ struct Trail {
 struct Lands {
     shell: bool,
 }
+
+/// How near (m) an enemy's shot must pass the viewer's head to be heard going by (`Whiz`),
+/// and how fast (m/s) it must be.
+const WHIZ_NEAR: f32 = 3.0;
+const WHIZ_SPEED: f32 = 80.0;
 
 /// A chunk tumbling as it flies (the turn a second, as an axis times radians).
 #[derive(Component)]
@@ -562,6 +570,8 @@ fn spawn_projectile(
             vel,
             gravity: b.gravity,
             left: b.life,
+            team,
+            whizzed: false,
         },
         Mesh3d(mesh),
         MeshMaterial3d(mat),
@@ -2442,6 +2452,7 @@ fn fly(
     mut booms: MessageWriter<Boom>,
     mut q: Query<ProjectileParts>,
     mut budget: ResMut<FxBudget>,
+    mut whiz: MessageWriter<Whiz>,
 ) {
     let Some(fx) = fx else { return };
     let c = &mut Ctx {
@@ -2495,6 +2506,29 @@ fn fly(
             c.commands.entity(e).despawn();
             flying.0.remove(&p.id);
             continue;
+        }
+        // An enemy's shot going close by the viewer's head: heard (once), where it's nearest.
+        if !own
+            && !p.whizzed
+            && p.team != Some(game.team)
+            && game.alive()
+            && p.vel.length_squared() > WHIZ_SPEED * WHIZ_SPEED
+            && flight_of(p.ammo) != Flight::Grenade
+        {
+            let seg = next - t.translation;
+            let k = (c.budget.eye - t.translation).dot(seg) / seg.length_squared().max(1e-6);
+            // (Nearest within this step, and going on past: not one that ends here.)
+            if (0.0..1.0).contains(&k) {
+                let near = t.translation + seg * k;
+                if near.distance_squared(c.budget.eye) < WHIZ_NEAR * WHIZ_NEAR {
+                    p.whizzed = true;
+                    whiz.write(Whiz {
+                        at: near,
+                        heavy: flight_of(p.ammo) != Flight::Bolt
+                            || p.ammo.ballistics().damage > 40.0,
+                    });
+                }
+            }
         }
         // Its trail: puffs of smoke left along the way.
         if let Some(mut tr) = trail {
