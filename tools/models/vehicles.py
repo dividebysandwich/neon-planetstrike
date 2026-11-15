@@ -818,78 +818,228 @@ def light_aaa():
 # ---------------------------------------------------------------------------------------------
 # Heavy tank.
 
+HT_TRACK = [(-2.7, 0.0), (2.7, 0.0), (3.4, 0.28), (3.72, 0.7), (3.62, 1.05), (3.3, 1.16),
+            (-3.3, 1.16), (-3.62, 1.05), (-3.72, 0.7), (-3.4, 0.28)]
+HT_WHEEL_R = 0.38
+HT_SPROCKET_R = 0.34
+
+
+def era(g, s, k, i, cols, rows, s0, t0, s1, t1, gap=0.012, h=0.05):
+    """A field of reactive armour bricks on a skin's face."""
+    for c in range(cols):
+        for r in range(rows):
+            a0 = s0 + (s1 - s0) * c / cols + gap
+            a1 = s0 + (s1 - s0) * (c + 1) / cols - gap
+            b0 = t0 + (t1 - t0) * r / rows + gap
+            b1 = t0 + (t1 - t0) * (r + 1) / rows - gap
+            s.plate(g, k, i, a0, b0, a1, b1, h=h, bevel=0.02)
+
+
 def heavy_tank():
     g = L.Geo()
-    for s in (-1, 1):
-        track(g, s * 1.45, s * 2.1, 3.8, 1.15, 0.7)
-        x0, x1 = sorted((s * 2.1, s * 2.2))
-        L.prism_x(g, [(-3.35, 1.15), (-3.05, 0.4), (3.15, 0.4), (3.45, 1.15)], x0, x1)
-        xo = s * 2.2
-        P.accent(g, [(xo, 0.95, -3.0), (xo, 0.95, 3.1)], (s, 0, 0), 0.06, glow=0.05)
-        for z in (-2.0, -0.7, 0.6, 1.9):
-            P.accent(g, [(xo, 0.5, z), (xo, 0.78, z + 0.2)], (s, 0, 0), 0.05, glow=0.04)
-    L.box(g, (-1.45, 0.4, -3.4), (1.45, 1.12, 3.5))
-    stations = [(-3.8, (2.0, 1.1, 1.25, 1.45, 1.6)), (-2.2, (2.15, 1.1, 1.55, 1.9, 1.8)),
-                (3.4, (2.15, 1.1, 1.55, 1.9, 1.8)), (3.8, (2.05, 1.1, 1.5, 1.75, 1.7))]
-    chassis(g, stations, 1)
-    turret_ring(g, 0.5, 1.9, 1.15)
-    part("heavy_tank_hull", g)
-    # Main turret (pivot (0, 2.2, 0.5); ring top at local -0.2).
+    for sx in (-1, 1):
+        track_run(g, sx, 1.45, 2.12, HT_TRACK, thick=0.08, cleats=(1, 2, 3, 7, 8, 9),
+                  cleat_gap=0.42)
+        spans = [(-2.9, -1.76), (-1.72, -0.58), (-0.54, 0.6), (0.64, 1.82), (1.86, 2.9)]
+        skirt(g, sx, 2.2, 0.62, 1.22, spans, t=0.05, stripe=2, bolts=3)
+        for z0, z1 in spans[:4]:  # bricks on the skirts' upper halves
+            for c in range(2):
+                za = z0 + 0.06 + c * (z1 - z0 - 0.12) / 2 + 0.01
+                zb = z0 + 0.06 + (c + 1) * (z1 - z0 - 0.12) / 2 - 0.01
+                x = sx * 2.25
+                P.plate(g, [(x, 0.66, za), (x, 0.66, zb), (x, 0.98, zb), (x, 0.98, za)],
+                        (sx, 0, 0), 0.04, ARMOR, bevel=0.02)
+    st = [(-3.86, 1.0, 2.0, 1.28, 1.5, 1.34), (-3.4, 0.5, 2.15, 1.4, 1.6, 1.5),
+          (-2.1, 0.4, 2.2, 1.6, 1.75, 1.9), (3.2, 0.4, 2.2, 1.6, 1.75, 1.9),
+          (3.86, 0.7, 2.1, 1.5, 1.65, 1.72)]
+    rings = [sec(z, [(1.4, yb), (1.4, 1.2), (xf, 1.2), (xf, ysh), (xd, yt)])
+             for z, yb, xf, ysh, xd, yt in st]
+    row = ["body", "body", "body", ARMOR, ARMOR, "body"]
+    s = skin(g, rings, sym([row, row, row, ["body", "body", "body", ARMOR, "body", "body"]]))
+    TOP, SHR, SHL = 4, 3, 5
+    # Glacis under reactive bricks, the driver's hatch and vision blocks above it.
+    era(g, s, 1, TOP, 6, 2, 0.04, 0.12, 0.96, 0.8)
+    s.bolts(g, 0, TOP, (0.05, 0.5), (0.95, 0.5), 10, r=0.022)
+    s.decal(g, 1, TOP, [(0.3, 0.84), (0.7, 0.84), (0.66, 0.96), (0.34, 0.96)], h=0.006)
+    for x in (-0.36, 0.0, 0.36):
+        periscope(g, (x, 1.9, -1.95), yaw=-x * 0.45, w=0.22, h=0.1, lens=RUBBER)
+    hatch_lid(g, (0.0, 1.9, -1.55), 0.32)
+    # Bow: lamp clusters on the fenders, towing eyes, spare links, a tow cable over the glacis.
+    for sx in (-1, 1):
+        for dx in (0.0, 0.3):
+            lamp(g, (sx * (1.72 + dx), 1.5, -3.38), (0, 0.15, -1), 0.1, depth=0.1, sides=6)
+        handle(g, (sx * 1.56, 1.46, -3.46), (sx * 2.16, 1.4, -3.46), (0, 0.5, -1), h=0.2,
+               r=0.016)
+        tow_hook(g, (sx * 0.85, 0.82, -3.66), (0, -0.92, -1), w=0.2)
+        strip(g, [(sx * 1.4, 1.3, -3.865), (sx * 0.35, 1.32, -3.865)], NZ, 0.035, glow=0.035)
+    for i in range(5):
+        x = -0.5 + i * 0.25
+        P.bevel_box(g, (x - 0.11, 0.9, -3.84), (x + 0.11, 1.16, -3.72), 0.02, mat=RUBBER)
+    P.hose(g, [(1.5, 1.52, -3.3), (1.2, 1.62, -2.95), (1.42, 1.78, -2.45), (1.6, 1.9, -2.0),
+               (1.6, 1.93, -1.0)], 0.028, n=5, mat=METAL, collars=(0, 4))
+    # Shoulders: plates, a team line, bins, tools, the exhaust stacks at the back.
+    for e, sx in ((SHR, 1), (SHL, -1)):
+        lo, hi = (0.0, 1.0) if e == SHR else (1.0, 0.0)
+
+        def u(v, lo=lo, hi=hi):
+            return lo + (hi - lo) * v
+        for t0, t1 in ((0.03, 0.24), (0.27, 0.48)):
+            s.panel(g, 2, e, u(0.12), t0, u(0.72), t1, h=0.014, rim=0.045, mat_in="body")
+        s.line(g, 2, e, (u(0.88), 0.03), (u(0.88), 0.97), 0.04, glow=0.045)
+        s.bolts(g, 2, e, (u(0.05), 0.03), (u(0.05), 0.97), 8, r=0.022)
+        stow_box(g, (min(sx * 1.78, sx * 2.2), 1.64, 0.55), (max(sx * 1.78, sx * 2.2), 1.96, 1.6),
+                 latch="+x" if sx > 0 else "-x")
+        # Exhaust stack: a shrouded riser with a raked mouth.
+        x = sx * 1.95
+        P.bevel_box(g, (x - 0.2, 1.6, 2.15), (x + 0.2, 2.25, 2.75), 0.04, mat=ARMOR)
+        P.vent(g, (x + sx * 0.2, 1.95, 2.45), (sx, 0, 0), 0.44, 0.42, slats=3, depth=0.03,
+               mat="body")
+        pipe(g, (x, 2.2, 2.45), (x, 2.62, 2.58), 0.13, lip=0.1, n=10)
+    P.hose(g, [(-1.95, 1.76, -1.6), (-1.95, 1.76, -0.2)], 0.022, n=5, mat=METAL)
+    P.plate(g, [(-2.08, 1.72, -1.95), (-1.84, 1.72, -1.95), (-1.86, 1.72, -1.6),
+                (-2.06, 1.72, -1.6)], Y, 0.035, METAL, bevel=0.012)
+    P.hose(g, [(1.95, 1.76, -1.7), (1.95, 1.76, -0.3)], 0.025, n=5, mat=METAL)
+    # Deck: the turret ring on a raised collar, the engine deck behind it.
+    P.lathe(g, (0, 1.9, 0.5), Y, [(0, 1.42), (0.05, 1.42), (0.05, 1.3), (0.1, 1.3)], n=16,
+            mats=[ARMOR, ARMOR, METAL], cap0=None, cap1="body")
+    P.bevel_box(g, (-1.6, 1.9, 2.0), (1.6, 2.04, 3.2), 0.04, mat=ARMOR)
+    for sx in (-1, 1):
+        o = (sx * 0.78, 2.04, 2.6)
+        P.vent(g, o, Y, 1.3, 0.95, slats=5, depth=0.04, mat=ARMOR, mat_in=HEAT, up=NZ,
+               frame=0.05)
+        P.lathe(g, (sx * 1.35, 1.9, 1.8), Y, [(0, 0.1), (0.05, 0.1), (0.07, 0.06)], n=8,
+                mats=METAL, cap0=None, cap1=METAL)
+    rivets(g, (0, 2.04, 2.1), (0, 2.04, 3.1), Y, 7, r=0.02)
+    # Stern: fuel drums on brackets, tail lights, the engine's doors, a towing eye.
+    for sx in (-1, 1):
+        P.lathe(g, (sx * 0.2, 2.03, 3.56), (sx, 0, 0), [(0, 0.24), (0.5, 0.24), (0.56, 0.24),
+                                                       (1.16, 0.24)],
+                n=10, mats=[METAL, RUBBER, METAL], cap0=METAL, cap1=METAL)
+        P.disc(g, P.rect_on((sx * 1.8, 1.4, 3.865), Z, 0.3, 0.09), Z, glow=0.045)
+        P.panel_inset(g, P.rect_on((sx * 0.6, 0.98, 3.865), Z, 0.9, 0.44), Z, h=0.014, rim=0.045,
+                      mat="body", mat_in=ARMOR)
+        P.bevel_box(g, (sx * 0.75 - 0.05, 1.7, 3.44), (sx * 0.75 + 0.05, 1.86, 3.7), 0.012,
+                    mat=METAL)
+    tow_hook(g, (0, 0.82, 3.865), Z, w=0.2, d=0.04)
+    part("heavy_tank_hull", g, smooth=None)
     g = L.Geo()
-    foot = [(0.75, -1.9), (1.45, -1.25), (1.5, 1.3), (1.2, 1.75), (-1.2, 1.75), (-1.5, 1.3),
-            (-1.45, -1.25), (-0.75, -1.9)]
-    rings = footprint_loft(g, foot, [(-0.2, 1, 1, 0), (0.2, 1.03, 1.02, 0),
-                                     (0.6, 0.82, 0.85, 0.05)])
-    belt_lines(g, rings, (0, 6), w=0.07)
-    top_outline(g, rings[2], 0.88, w=0.06)
-    hatch(g, (-0.6, 0.6, 0.15), 0.3)
-    for s in (-1, 1):  # applique side slabs
-        x0, x1 = sorted((s * 1.47, s * 1.64))
-        L.box(g, (x0, -0.12, -1.0), (x1, 0.32, 1.15))
-        xo = s * 1.64
-        P.accent(g, [(xo, 0.1, -0.88), (xo, 0.1, 1.03)], (s, 0, 0), 0.07, glow=0.05)
-        P.flow(g, [(xo, 0.24, -0.88), (xo, 0.24, 1.03)], (s, 0, 0), 0.025)
-        for k in range(3):  # smoke launchers
-            a = L.add((s * (1.1 + 0.12 * k), 0.62, -1.3 - 0.1 * k), (0, 0, 0))
-            b = L.add(a, (s * 0.06, 0.12, -0.22))
-            P.tube(g, a, b, 0.05, n=6)
-    L.box(g, (-1.0, -0.1, 1.65), (1.0, 0.4, 1.95))
-    P.white(g, [(-0.8, 0.15, 1.95), (0.8, 0.15, 1.95)], Z, 0.04, glow=0.04)
+    P.road_wheel(g, (0, 0, 0), X, HT_WHEEL_R, 0.48, n=14, cap_mat=METAL)
+    part("heavy_tank_wheel", g, smooth=40)
+    g = L.Geo()
+    P.tyre(g, (0, 0, 0), X, HT_SPROCKET_R * 0.9, 0.46, n=12, lugs=14, hub=0.62, mat=METAL,
+           hub_mat="body", cap_mat=METAL, lug_h=HT_SPROCKET_R * 0.1)
+    part("heavy_tank_sprocket", g, smooth=40)
+
+    # Main turret (pivot (0, 2.2, 0.5); the ring's top at local -0.2). The roof is kept flat and
+    # clear within 1.2 m of the axis: the gunner's cupola stands over the hull at (0, 0.8, 0.7)
+    # and the turret turns under it, on the race rings.
+    g = L.Geo()
+    foot = [(0.7, -2.0), (1.5, -1.2), (1.55, 1.1), (1.25, 1.72), (-1.25, 1.72), (-1.55, 1.1),
+            (-1.5, -1.2), (-0.7, -2.0)]
+    s = footprint(g, foot, [(-0.2, 0.88, 0.9, 0.0), (0.0, 1, 1, 0), (0.4, 0.97, 0.97, 0.0),
+                            (0.6, 0.84, 0.86, 0.04)],
+                  mats=lambda k, i: "body" if k == 0 else ARMOR, cap1=ARMOR)
+    for i in range(len(foot)):
+        q = s.q(1, i)
+        w = L.length(L.sub(q[1], q[0]))
+        mid = cen(q)
+        if w > 2.0:  # the long cheeks: wedges of add-on armour, a slash of paint, a team line
+            s.plate(g, 1, i, 0.04, 0.2, 0.62, 0.96, h=0.09, bevel=0.05)
+            s.decal(g, 1, i, [(0.2, 0.3), (0.3, 0.3), (0.42, 0.86), (0.32, 0.86)], h=0.096)
+            s.panel(g, 1, i, 0.66, 0.24, 0.95, 0.92, h=0.014, rim=0.04, mat_in="body")
+            s.line(g, 1, i, (0.03, 0.09), (0.97, 0.09), 0.04, glow=0.045)
+        elif mid[2] < 0 and w > 0.9:  # the front's facets: bricks
+            era(g, s, 1, i, 3, 2, 0.06, 0.12, 0.94, 0.9, h=0.045)
+        elif mid[2] > 0 and w < 1.0:
+            s.bolts(g, 1, i, (0.12, 0.5), (0.88, 0.5), 4, r=0.02)
+    for r in (0.3, 1.14):
+        P.lathe(g, (0, 0.6, 0), Y, [(0, r - 0.03), (0.025, r - 0.03), (0.025, r + 0.03),
+                                    (0, r + 0.03)], n=24, mats=METAL, cap0=None, cap1=None)
+    # Roof, outside the race: the gunner's sight, the panoramic sight, hatch, wind mast.
+    P.bevel_box(g, (0.5, 0.58, -1.62), (0.88, 0.86, -1.26), 0.03, mat=ARMOR, mats={"-z": GLASS})
+    P.lathe(g, (-0.7, 0.6, -1.42), Y, [(0, 0.14), (0.12, 0.14), (0.12, 0.11), (0.3, 0.11),
+                                       (0.34, 0.07)], n=10, mats=[ARMOR, ARMOR, GLASS, ARMOR],
+            cap0=None, cap1=ARMOR)
+    hatch_lid(g, (0.0, 0.6, -1.36), 0.2, h=0.035, grip=False)
+    antenna(g, (-1.05, 0.6, 1.25), 1.3)
+    antenna(g, (1.05, 0.6, 1.25), 0.9, tip=METAL)
+    P.tube(g, (1.12, 0.6, -0.9), (1.12, 0.95, -0.9), 0.02, n=4, mat=METAL)
+    P.lathe(g, (1.12, 0.95, -0.9), Y, [(0, 0.05), (0.03, 0.07), (0.06, 0.05)], n=6, mats=METAL,
+            cap0=METAL, cap1=METAL)
+    for sx in (-1, 1):
+        smoke_launchers(g, sx, (sx * 1.3, 0.28, -1.55), n=4)
+        P.disc(g, P.rect_on((sx * 0.85, 0.08, 1.725), Z, 0.3, 0.09), Z, glow=0.04)
+    # The bustle rack: bins, fuel cans, a rolled tarp.
+    for y in (-0.08, 0.36):
+        P.hose(g, [(-1.2, y, 1.72), (-1.2, y, 2.2), (1.2, y, 2.2), (1.2, y, 1.72)], 0.024, n=4,
+               mat=METAL, caps=False)
+    for x in (-1.2, -0.4, 0.4, 1.2):
+        P.hose(g, [(x, -0.08, 2.2), (x, 0.36, 2.2)], 0.018, n=4, mat=METAL, caps=False)
+    stow_box(g, (-1.1, -0.05, 1.75), (-0.2, 0.32, 2.15), lid="body", latch="+z")
+    for x in (0.0, 0.3):
+        P.bevel_box(g, (x, -0.05, 1.78), (x + 0.24, 0.3, 2.12), 0.03, mat=PAINT)
+        P.lathe(g, (x + 0.12, 0.3, 1.95), Y, [(0, 0.04), (0.04, 0.04)], n=6, mats=METAL, cap0=None,
+                cap1=METAL)
+    P.lathe(g, (0.62, 0.1, 1.96), X, [(0, 0.15), (0.5, 0.15)], n=8, mats=POLY, cap0=POLY, cap1=POLY)
     part("heavy_tank_turret", g)
-    # Main gun (4.4 m).
+
+    # Main gun (4.4 m): a deep mantlet, thermal sleeve, bore evacuator, a three-baffle brake.
     g = L.Geo()
-    mantlet(g, [(-1.2, (0.55, 0.34)), (-2.0, (0.46, 0.3)), (-2.15, (0.3, 0.22))])
-    gun(g, (0, 0, -2.1), [(0, 0.19), (0.8, 0.17), (0.8, 0.24), (1.3, 0.24), (1.3, 0.17),
-                          (1.95, 0.165), (1.95, 0.25), (2.3, 0.25), (2.3, 0.11), (2.28, 0.11)],
-        n=10, rings=((0.35, 0.185), (1.0, 0.245), (2.02, 0.255)))
-    part("heavy_tank_barrel", g)
+
+    def ms(z, hx, hy, c):
+        return [(-hx + c, -hy, z), (hx - c, -hy, z), (hx, -hy + c, z), (hx, hy - c, z),
+                (hx - c, hy, z), (-hx + c, hy, z), (-hx, hy - c, z), (-hx, -hy + c, z)]
+    skin(g, [ms(-1.15, 0.62, 0.36, 0.08), ms(-1.9, 0.52, 0.33, 0.1), ms(-2.18, 0.3, 0.23, 0.08)],
+         ARMOR, "body", ARMOR)
+    P.lathe(g, (0, 0, -2.1), NZ,
+            [(0, 0.21), (0.3, 0.21), (0.3, 0.165), (0.75, 0.16), (0.75, 0.175), (1.0, 0.175),
+             (1.0, 0.23), (1.45, 0.23), (1.45, 0.155), (1.85, 0.15), (1.85, 0.22), (1.97, 0.22),
+             (1.97, 0.17), (2.05, 0.17), (2.05, 0.22), (2.17, 0.22), (2.17, 0.17), (2.2, 0.17),
+             (2.2, 0.21), (2.3, 0.21), (2.3, 0.11), (2.1, 0.11)],
+            n=12, mats=[ARMOR, ARMOR, METAL, "body", METAL, METAL, "body", METAL, METAL,
+                        HEAT, HEAT, HEAT, HEAT, HEAT, HEAT, HEAT, HEAT, HEAT, HEAT, HEAT, "body"],
+            cap0=None, cap1="rubber")
+    P.lathe(g, (0, 0, -3.4), NZ, [(0, 0.24), (0.05, 0.24)], n=12, mats="accent", cap0=None,
+            cap1=None)
+    pipe(g, (0.42, 0.08, -1.8), (0.42, 0.08, -2.6), 0.045, mat=METAL, n=6)
+    rivets(g, (-0.45, 0.345, -1.5), (0.45, 0.345, -1.5), Y, 5, r=0.024)
+    P.bevel_box(g, (-0.5, 0.2, -1.75), (-0.26, 0.42, -1.3), 0.03, mat="body", mats={"-z": GLASS})
+    part("heavy_tank_barrel", g, smooth=40)
     L_MUZZLES.append(("heavy_tank_muzzle", (0, 0, -4.4)))
-    # MG cupola (pivot (0, 3.0, 1.2); main turret top at local -0.2).
+
+    # The gunner's cupola (pivot (0, 3.0, 1.2); the main turret's roof at local -0.2).
     g = L.Geo()
-    P.lathe(g, (0, -0.22, 0), Y, [(0, 0.42), (0.1, 0.42), (0.14, 0.34)], n=8)
-    for s in (-1, 1):
-        x0, x1 = sorted((s * 0.12, s * 0.18))
-        L.box(g, (x0, -0.08, -0.09), (x1, 0.08, 0.09))
-    P.accent(g, P.circle((0, -0.08, 0), Y, 0.28, 8), Y, 0.035, closed=True, glow=0.03)
-    zf = -0.42 * math.cos(math.pi / 8)
-    P.disc(g, [(-0.08, -0.2, zf), (0.08, -0.2, zf), (0.08, -0.15, zf), (-0.08, -0.15, zf)],
-           NZ, mat=LIGHT, glow=0.02)
-    part("heavy_tank_mg_turret", g)
-    # Chaingun (1.1 m).
+    P.lathe(g, (0, -0.2, 0), Y, [(0, 0.44), (0.06, 0.44), (0.06, 0.4), (0.13, 0.4),
+                                 (0.13, 0.42), (0.17, 0.36)], n=12,
+            mats=[METAL, METAL, GLASS, ARMOR, ARMOR], cap0=None, cap1=ARMOR)
+    # (The hatch stands open behind the gunner; a shield either side of the gun.)
+    P.plate(g, P.rect_on((0, 0.12, 0.4), (0, 0.25, 1), 0.52, 0.5), (0, 0.25, 1), 0.035, ARMOR,
+            bevel=0.03)
+    for sx in (-1, 1):
+        poly = [(sx * 0.1, -0.03, -0.3), (sx * 0.46, -0.03, -0.24), (sx * 0.46, 0.3, -0.18),
+                (sx * 0.1, 0.36, -0.24)]
+        P.extrude(g, poly, (0, 0.012, 0.035), ARMOR)
+        decal(g, [(sx * 0.2, 0.08, -0.288), (sx * 0.4, 0.08, -0.255), (sx * 0.4, 0.16, -0.24),
+                  (sx * 0.2, 0.16, -0.273)], (0, -0.2, -1), h=0.004)
+    strip(g, P.circle((0, -0.03, 0), Y, 0.3, 12), Y, 0.03, closed=True, glow=0.03)
+    part("heavy_tank_mg_turret", g, smooth=35)
+    # The chaingun (1.1 m): receiver, ammunition box and belt, a jacketed barrel.
     g = L.Geo()
-    L.box(g, (-0.09, -0.08, -0.25), (0.09, 0.09, 0.25))
-    L.box(g, (0.09, -0.11, -0.1), (0.24, 0.05, 0.15))
-    for s in (-1, 1):
-        P.accent(g, [(s * 0.09, 0.03, -0.2), (s * 0.09, 0.03, 0.2)], (s, 0, 0), 0.025,
-                 glow=0.025)
-    P.flow(g, [(0.24, -0.03, -0.06), (0.24, -0.03, 0.11)], X, 0.02)
-    for k in range(3):
-        a = math.radians(90 + 120 * k)
-        bx, by = 0.045 * math.cos(a), 0.045 * math.sin(a)
-        P.tube(g, (bx, by, -0.25), (bx, by, -1.1), 0.022, n=5)
-    P.lathe(g, (0, 0, -0.25), NZ, [(0, 0.08), (0.08, 0.08)], n=8)
-    P.lathe(g, (0, 0, -0.25), NZ, [(0.72, 0.075), (0.78, 0.075)], n=8, mats="accent")
-    part("heavy_tank_mg", g)
+    P.bevel_box(g, (-0.08, -0.07, -0.26), (0.08, 0.09, 0.26), 0.015, mat=METAL)
+    P.bevel_box(g, (0.09, -0.14, -0.1), (0.27, 0.06, 0.16), 0.02, mat=PAINT)
+    P.hose(g, [(0.18, 0.06, 0.02), (0.14, 0.13, 0.0), (0.04, 0.1, -0.02)], 0.03, n=4, mat=METAL,
+           caps=False)
+    P.lathe(g, (0, 0.01, -0.25), NZ, [(0, 0.06), (0.4, 0.06), (0.4, 0.035), (0.72, 0.032),
+                                      (0.72, 0.05), (0.85, 0.055), (0.85, 0.03), (0.78, 0.03)],
+            n=8, mats=["body", "body", METAL, METAL, HEAT, HEAT, "body"], cap0=None, cap1="rubber")
+    for z in (-0.36, -0.46, -0.56):
+        for n_ in (Y, NY):
+            decal(g, P.rect_on((0, 0.01 + n_[1] * 0.06 * math.cos(math.pi / 8), z), n_, 0.04,
+                               0.06, up=NZ), n_, RUBBER, h=0.003)
+    for sx in (-1, 1):
+        handle(g, (sx * 0.06, 0.0, 0.26), (sx * 0.06, 0.0, 0.3), (sx, 0, 0.3), h=0.07, r=0.012)
+    strip(g, [(-0.08, 0.04, -0.2), (-0.08, 0.04, 0.2)], NX, 0.02, glow=0.02)
+    part("heavy_tank_mg", g, smooth=40)
     L_MUZZLES.append(("heavy_tank_mg_muzzle", (0, 0, -1.1)))
 
 
