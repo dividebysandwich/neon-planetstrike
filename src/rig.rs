@@ -44,6 +44,30 @@ const MAX_TWIST: f32 = 0.9;
 const STEP_TIME: f32 = 0.22;
 const STEP_LIFT: f32 = 0.07;
 
+/// Where a body's joints are and how wide it stands: the infantry's and, wider all round, a
+/// MAX exosuit's (its own meshes, tools/models/max.py, as long between the joints).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Proportions {
+    /// The shoulder joints in the chest's frame; X mirrored on the left.
+    pub shoulder: Vec3,
+    /// The hip joints in the pelvis's frame; X mirrored on the left.
+    pub hip: Vec3,
+    /// Half the distance between the feet, standing.
+    pub stance: f32,
+}
+
+pub const INFANTRY: Proportions = Proportions {
+    shoulder: SHOULDER,
+    hip: HIP,
+    stance: STANCE,
+};
+
+pub const MAX: Proportions = Proportions {
+    shoulder: Vec3::new(0.32, -0.07, 0.0),
+    hip: Vec3::new(0.12, HIP.y, 0.0),
+    stance: 0.16,
+};
+
 fn wrap(a: f32) -> f32 {
     (a + PI).rem_euclid(TAU) - PI
 }
@@ -91,10 +115,10 @@ pub fn neck(eye: Vec3, rot: Quat) -> Transform {
 
 /// An arm's upper arm and forearm, from the shoulder of the chest at `chest` (`side` -1 left,
 /// +1 right) to the glove at `hand`.
-pub fn arm(chest: &Transform, side: f32, hand: &Transform) -> [Transform; 2] {
+pub fn arm(p: &Proportions, chest: &Transform, side: f32, hand: &Transform) -> [Transform; 2] {
     let right = chest.rotation * Vec3::X;
     let fwd = chest.rotation * Vec3::NEG_Z;
-    let shoulder = chest.transform_point(SHOULDER * Vec3::new(side, 1.0, 1.0));
+    let shoulder = chest.transform_point(p.shoulder * Vec3::new(side, 1.0, 1.0));
     let wrist = hand.transform_point(WRIST);
     // Elbows out, down and back.
     let pole = chest.rotation * Vec3::new(side * 0.7, -1.0, 0.5);
@@ -165,7 +189,14 @@ impl Gait {
 
     /// Advances by `dt` and poses the legs: `root` is the feet (world), `chest_top` the chest's
     /// top relative to them, `chest_yaw` its facing.
-    pub fn update(&mut self, dt: f32, root: Vec3, chest_top: Vec3, chest_yaw: f32) -> Legs {
+    pub fn update(
+        &mut self,
+        p: &Proportions,
+        dt: f32,
+        root: Vec3,
+        chest_top: Vec3,
+        chest_yaw: f32,
+    ) -> Legs {
         let dt = dt.clamp(1e-4, 0.1);
         let fresh = !self.ready || root.distance(self.root) > 2.0;
         if fresh {
@@ -223,7 +254,7 @@ impl Gait {
         // How high the hips would hang from the chest, and how tall this player stands. The
         // legs are as long as it takes to reach the floor from there standing straight (with
         // the same soft knee as at the default height), whatever the headset reports.
-        let want = chest_top.y - PELVIS_DROP + HIP.y;
+        let want = chest_top.y - PELVIS_DROP + p.hip.y;
         self.stand = (self.stand - 0.01 * dt).max(want).max(MIN_STAND);
         let scale = (self.stand - ANKLE) / (STAND_HIP - ANKLE);
         let (thigh, shin) = (THIGH * scale, SHIN * scale);
@@ -246,7 +277,7 @@ impl Gait {
         let bob = 0.02 * moving * (2.0 * self.phase).cos();
         // (Leaning back a little, backpedalling.)
         let pelvis = Transform {
-            translation: Vec3::new(chest_top.x, hip_y - HIP.y + bob, chest_top.z)
+            translation: Vec3::new(chest_top.x, hip_y - p.hip.y + bob, chest_top.z)
                 + hips * Vec3::new(0.0, 0.0, back),
             rotation: hips * Quat::from_rotation_x(-0.3 * crouch + 0.1 * back_k),
             scale: Vec3::ONE,
@@ -257,7 +288,7 @@ impl Gait {
         };
         // Side-stepping, the feet stand wider so the trailing one closes up to the leading one
         // rather than crossing through it.
-        let width = (STANCE + 0.06 * crouch).max(lat.abs() * amp * moving + 0.06);
+        let width = (p.stance + 0.06 * crouch).max(lat.abs() * amp * moving + 0.06);
         let ground = root.y + ANKLE;
         let rest: [Vec3; 2] = [-1.0, 1.0].map(|side| {
             let p = root + chest_top + hips * Vec3::new(side * width, 0.0, -0.02);
@@ -288,7 +319,7 @@ impl Gait {
                 f.step = 0.0;
             }
         }
-        let hip_w = |side: f32| root + pelvis.transform_point(HIP * Vec3::new(side, 1.0, 1.0));
+        let hip_w = |side: f32| root + pelvis.transform_point(p.hip * Vec3::new(side, 1.0, 1.0));
         for (i, side) in [-1.0f32, 1.0].into_iter().enumerate() {
             let f = &mut self.feet[i];
             if f.step < 1.0 {
@@ -382,7 +413,7 @@ mod tests {
         let n = (secs / (1.0 / 90.0)) as usize;
         for k in 0..n {
             let root = from + vel * (k as f32 / 90.0);
-            legs = g.update(1.0 / 90.0, root, chest(eye), 0.0);
+            legs = g.update(&INFANTRY, 1.0 / 90.0, root, chest(eye), 0.0);
         }
         legs
     }
@@ -483,7 +514,7 @@ mod tests {
         let mut root = Vec3::ZERO;
         for _ in 0..180 {
             root += vel / 90.0;
-            let legs = g.update(1.0 / 90.0, root, chest(ps_sim::player::EYE), 0.0);
+            let legs = g.update(&INFANTRY, 1.0 / 90.0, root, chest(ps_sim::player::EYE), 0.0);
             let d = legs.boot[0].translation.z - legs.boot[1].translation.z;
             spread = spread.max(d.abs());
             lifted |= legs.boot.iter().any(|b| b.translation.y > ANKLE + 0.04);
@@ -498,7 +529,13 @@ mod tests {
         let mut g = Gait::default();
         run(&mut g, Vec3::ZERO, Vec3::ZERO, ps_sim::player::EYE, 0.5);
         for _ in 0..360 {
-            g.update(1.0 / 90.0, Vec3::ZERO, chest(ps_sim::player::EYE), 1.5);
+            g.update(
+                &INFANTRY,
+                1.0 / 90.0,
+                Vec3::ZERO,
+                chest(ps_sim::player::EYE),
+                1.5,
+            );
         }
         assert!(wrap(g.hip_yaw - 1.5).abs() < 0.1);
         for f in &g.feet {
@@ -518,7 +555,7 @@ mod tests {
         let mut gap = f32::MAX;
         for _ in 0..180 {
             root += vel / 90.0;
-            let legs = g.update(1.0 / 90.0, root, chest(ps_sim::player::EYE), 0.0);
+            let legs = g.update(&INFANTRY, 1.0 / 90.0, root, chest(ps_sim::player::EYE), 0.0);
             let x = Quat::from_rotation_y(g.hip_yaw) * Vec3::X;
             gap = gap.min((legs.boot[1].translation - legs.boot[0].translation).dot(x));
         }

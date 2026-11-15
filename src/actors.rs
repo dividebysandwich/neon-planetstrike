@@ -27,6 +27,8 @@ struct AvatarParts {
     root: Entity,
     body: Entity,
     head: Entity,
+    /// The animal's head and eyes (under `head`; hidden in a MAX's helmet).
+    face: Entity,
     hands: [Entity; 2],
     hand_looks: [[Entity; 2]; 2],
     neck: Entity,
@@ -37,14 +39,43 @@ struct AvatarParts {
     tail: Vec<Entity>,
     animal: usize,
     swing: crate::tail::Tail,
-    /// The guns, one per weapon, under `gun` (in the gun hand).
+    /// The guns under `gun` (in the gun hand), each spawned when first held.
     gun: Entity,
-    guns: Vec<(Weapon, Entity)>,
+    guns: Vec<Gun>,
+    /// How far the held gun's turning parts have turned, and how fast (radians, per second).
+    spin: f32,
+    spin_rate: f32,
     team: Team,
-    /// The MAX's plating (over the torso), and the cloak's shimmer.
-    shell: Entity,
+    /// The exosuit, once the player has worn one.
+    max: Option<MaxParts>,
+    /// The cloak's shimmer.
     shimmer: Entity,
 }
+
+/// A gun's model under an avatar's `gun`, and its turning parts (`spawn_spins`).
+struct Gun {
+    weapon: Weapon,
+    entity: Entity,
+    spins: Vec<Entity>,
+}
+
+/// A MAX's exosuit (tools/models/max.py), drawn in place of the infantry parts and posed by
+/// the same rig with `crate::rig::MAX` proportions.
+struct MaxParts {
+    torso: Entity,
+    /// Under the avatar's `head`.
+    helmet: Entity,
+    pauldrons: [Entity; 2],
+    arms: [[Entity; 2]; 2],
+    /// Under the avatar's `hands`: the gauntlets (a hand in an arm gun's cradle has none).
+    fists: [Entity; 2],
+    pelvis: Entity,
+    legs: [[Entity; 3]; 2],
+}
+
+/// How fast a firing gun's barrels turn (radians per second), and how quickly they get there.
+const SPIN_RATE: f32 = 30.0;
+const SPIN_UP: f32 = 6.0;
 
 /// How much bigger a MAX is drawn.
 const MAX_SCALE: f32 = 1.15;
@@ -175,8 +206,10 @@ pub fn weapon_model(models: &Models, w: Weapon) -> Model {
 
 pub fn weapon_mesh(w: Weapon) -> &'static str {
     match w {
-        // (The factions' rifles: the rifle's model, for now.)
-        Weapon::Rifle | Weapon::Ember | Weapon::Volt | Weapon::Hive => "rifle",
+        Weapon::Rifle => "rifle",
+        Weapon::Ember => "ember",
+        Weapon::Volt => "volt",
+        Weapon::Hive => "hive",
         Weapon::Scatter => "scatter",
         Weapon::Lance => "lance",
         Weapon::Striker => "striker",
@@ -188,6 +221,42 @@ pub fn weapon_mesh(w: Weapon) -> &'static str {
         Weapon::Mauler => "mauler",
         Weapon::Burster => "burster",
     }
+}
+
+/// A MAX's arm guns: worn on the forearm, the hand inside their cradle.
+fn arm_gun(w: Weapon) -> bool {
+    matches!(w, Weapon::Pounder | Weapon::Mauler | Weapon::Burster)
+}
+
+/// A gun's turning parts (a rotary gun's barrel clusters), spawned under its entity `gun`:
+/// the mesh `<mesh>_spin`, one at each node `<mesh>_spin_N`, to be turned about their Z.
+pub fn spawn_spins(
+    commands: &mut Commands,
+    gun: Entity,
+    models: &Models,
+    palette: &Palette,
+    team: Option<Team>,
+    w: Weapon,
+) -> Vec<Entity> {
+    let name = format!("{}_spin", weapon_mesh(w));
+    if !models.has(&name) {
+        return Vec::new();
+    }
+    let model = models.get(&name);
+    (0..)
+        .map_while(|i| models.nodes.get(&format!("{name}_{i}")).copied())
+        .map(|at| {
+            let e = commands
+                .spawn((
+                    Transform::from_translation(at),
+                    Visibility::default(),
+                    ChildOf(gun),
+                ))
+                .id();
+            spawn_model(commands, e, &model, palette, team);
+            e
+        })
+        .collect()
 }
 
 /// Where a weapon's muzzle is in its frame.
@@ -222,7 +291,6 @@ fn spawn_avatar(
         e
     };
     let body = part(commands, &models.torso, root);
-    let shell = part(commands, &models.get("max_shell"), body);
     let shimmer = commands
         .spawn((
             Mesh3d(look.mesh.clone()),
@@ -292,20 +360,11 @@ fn spawn_avatar(
     let gun = commands
         .spawn((Transform::IDENTITY, Visibility::default(), GunOf(p.id)))
         .id();
-    let guns = Weapon::ALL
-        .iter()
-        .map(|&w| {
-            let e = commands
-                .spawn((Transform::IDENTITY, Visibility::Hidden, ChildOf(gun)))
-                .id();
-            spawn_model(commands, e, &weapon_model(models, w), palette, team);
-            (w, e)
-        })
-        .collect();
     AvatarParts {
         root,
         body,
         head,
+        face: grown,
         hands,
         hand_looks,
         neck,
@@ -317,11 +376,54 @@ fn spawn_avatar(
         animal: animal_index,
         swing: default(),
         gun,
-        guns,
+        guns: Vec::new(),
+        spin: 0.0,
+        spin_rate: 0.0,
         team: p.team,
-        shell,
+        max: None,
         shimmer,
     }
+}
+
+/// The exosuit's parts under the avatar `v` (none if the models are missing: the MAX is then
+/// drawn as infantry, a size up).
+fn spawn_max(
+    commands: &mut Commands,
+    v: &AvatarParts,
+    models: &Models,
+    palette: &Palette,
+) -> Option<MaxParts> {
+    if !models.has("max_torso") {
+        return None;
+    }
+    let team = Some(v.team);
+    let part = |commands: &mut Commands, name: &str, parent: Entity| {
+        let e = commands
+            .spawn((Transform::IDENTITY, Visibility::Hidden, ChildOf(parent)))
+            .id();
+        spawn_model(commands, e, &models.get(name), palette, team);
+        e
+    };
+    Some(MaxParts {
+        torso: part(commands, "max_torso", v.root),
+        helmet: part(commands, "max_helmet", v.head),
+        pauldrons: [0, 1].map(|_| part(commands, "max_pauldron", v.root)),
+        arms: [0, 1].map(|_| {
+            [
+                part(commands, "max_upper_arm", v.root),
+                part(commands, "max_forearm", v.root),
+            ]
+        }),
+        fists: v.hands.map(|h| part(commands, "max_fist", h)),
+        pelvis: part(commands, "max_pelvis", v.root),
+        legs: [0, 1].map(|_| {
+            [
+                part(commands, "max_thigh", v.root),
+                part(commands, "max_shin", v.root),
+                part(commands, "max_boot", v.root),
+            ]
+        }),
+    })
 }
 
 /// Where a player's head and hands are (relative to the feet) when the snapshot has no VR
@@ -332,15 +434,24 @@ pub fn flat_poses(yaw: f32, pitch: f32, crouch: bool, w: Weapon) -> (Transform, 
     let eye = ps_sim::avatar::eye_on_neck(level, look);
     let head = Transform::from_translation(eye).with_rotation(look);
     let long = !matches!(w, Weapon::Pistol | Weapon::Medgun);
-    let right =
-        Transform::from_translation(eye + look * Vec3::new(0.17, -0.27, -0.34)).with_rotation(look);
-    let left_at = if long {
-        Vec3::new(-0.02, -0.25, -0.6)
+    // (A MAX's arm gun: lower and further out, so its bulk stays out of the view; the free
+    // fist at the side.)
+    let arm = arm_gun(w);
+    let right_at = if arm {
+        Vec3::new(0.24, -0.42, -0.4)
     } else {
-        Vec3::new(0.08, -0.32, -0.3)
+        Vec3::new(0.17, -0.27, -0.34)
+    };
+    let right = Transform::from_translation(eye + look * right_at).with_rotation(look);
+    let (left_at, roll) = if arm {
+        (Vec3::new(-0.3, -0.42, -0.3), 0.0)
+    } else if long {
+        (Vec3::new(-0.02, -0.25, -0.6), -0.6)
+    } else {
+        (Vec3::new(0.08, -0.32, -0.3), -0.6)
     };
     let left = Transform::from_translation(eye + look * left_at)
-        .with_rotation(look * Quat::from_rotation_z(-0.6));
+        .with_rotation(look * Quat::from_rotation_z(roll));
     (head, [left, right])
 }
 
@@ -352,16 +463,19 @@ const GRIP_AXIS: Vec3 = Vec3::new(0.0, 0.927_184, -0.374_607);
 /// the gun's frame (the gun hand's; grip at the origin), and whether it grips a fore grip (the
 /// gripping glove, turned to the fore grip's slant) or cups the handguard from below (the open
 /// glove, palm up and in, thumb along the left side). None for guns held in one hand: the
-/// pistol, the medgun, and a MAX's arm guns (the suit's own fist).
+/// pistol, the medgun, and a MAX's arm guns (worn on the forearm).
 fn support(w: Weapon) -> Option<(Transform, bool)> {
     // The open left glove's palm faces +X: turned up and towards the gun.
     let cup = Quat::from_rotation_z(1.05) * Quat::from_rotation_y(-0.25);
     let palm = |at: Vec3| Some((Transform::from_translation(at).with_rotation(cup), false));
     match w {
         // Under the handguard (the rifle's and lance's), the pump, the repair gun's nozzle.
-        Weapon::Rifle | Weapon::Ember | Weapon::Volt | Weapon::Hive => {
-            palm(Vec3::new(-0.024, 0.042, -0.24))
-        }
+        Weapon::Rifle => palm(Vec3::new(-0.024, 0.042, -0.24)),
+        // The factions' rifles: under the Ember's heat shroud, the Volt's slim handguard,
+        // the Hive's helical magazine.
+        Weapon::Ember => palm(Vec3::new(-0.03, 0.044, -0.25)),
+        Weapon::Volt => palm(Vec3::new(-0.018, 0.038, -0.24)),
+        Weapon::Hive => palm(Vec3::new(-0.024, 0.004, -0.22)),
         Weapon::Lance => palm(Vec3::new(-0.022, 0.04, -0.3)),
         Weapon::Scatter => palm(Vec3::new(-0.019, 0.012, -0.205)),
         Weapon::RepairGun => palm(Vec3::new(-0.029, 0.04, -0.21)),
@@ -467,10 +581,19 @@ fn sync_players(
         if !alive {
             continue;
         }
-        // A MAX: a size up (not oneself, whose view it would upset), plated.
+        // A MAX: a size up (not oneself, whose view it would upset), in its exosuit (spawned
+        // the first time; shown from the next frame).
         let max = p.has(flags::MAX);
         let scale = if max && !me { MAX_SCALE } else { 1.0 };
-        set_vis(&mut vis, v.shell, max && !me);
+        if max && v.max.is_none() {
+            v.max = spawn_max(&mut commands, v, &models, &palette);
+        }
+        let suit = max && v.max.is_some();
+        let prop = if suit {
+            &crate::rig::MAX
+        } else {
+            &crate::rig::INFANTRY
+        };
         let feet = if mine {
             mover.body.feet
         } else {
@@ -533,11 +656,18 @@ fn sync_players(
             t.translation = feet;
             t.scale = Vec3::splat(scale);
         }
-        set_vis(&mut vis, v.body, !me);
+        set_vis(&mut vis, v.body, !me && !suit);
         set_vis(&mut vis, v.head, !me);
-        if let Ok(mut t) = transforms.get_mut(v.body) {
-            t.translation = ps_sim::avatar::chest_top(head.translation, head.rotation);
-            t.rotation = Quat::from_rotation_y(yaw);
+        set_vis(&mut vis, v.face, !suit);
+        for e in [v.body].into_iter().chain(v.max.as_ref().map(|m| m.torso)) {
+            if let Ok(mut t) = transforms.get_mut(e) {
+                t.translation = ps_sim::avatar::chest_top(head.translation, head.rotation);
+                t.rotation = Quat::from_rotation_y(yaw);
+            }
+        }
+        if let Some(m) = &v.max {
+            set_vis(&mut vis, m.torso, !me && suit);
+            set_vis(&mut vis, m.helmet, suit);
         }
         if let Ok(mut t) = transforms.get_mut(v.head) {
             *t = head;
@@ -557,8 +687,13 @@ fn sync_players(
             let steadies = i == off && steady.is_some();
             let grips = holding == Some(i) || (steadies && steady.is_some_and(|s| s.1));
             set_vis(&mut vis, h, !me || vr || holding == Some(i) || steadies);
-            set_vis(&mut vis, v.hand_looks[i][0], !grips);
-            set_vis(&mut vis, v.hand_looks[i][1], grips);
+            set_vis(&mut vis, v.hand_looks[i][0], !grips && !suit);
+            set_vis(&mut vis, v.hand_looks[i][1], grips && !suit);
+            // (A MAX's gauntlet, but on the hand inside an arm gun's cradle.)
+            if let Some(m) = &v.max {
+                let cradled = holding == Some(i) && arm_gun(weapon);
+                set_vis(&mut vis, m.fists[i], suit && !cradled);
+            }
             if let Ok(mut t) = transforms.get_mut(h) {
                 *t = hands[i];
             }
@@ -572,26 +707,50 @@ fn sync_players(
         let chest =
             Transform::from_translation(ps_sim::avatar::chest_top(head.translation, head.rotation))
                 .with_rotation(Quat::from_rotation_y(yaw));
+        // (A MAX's gaiter hangs from its helmet instead of the neck.)
         place(
             v.neck,
             crate::rig::neck(head.translation, head.rotation),
-            !me,
+            !me && !suit,
         );
         for (i, side) in [-1.0, 1.0].into_iter().enumerate() {
-            let [upper, fore] = crate::rig::arm(&chest, side, &hands[i]);
-            // (A MAX's upper arms are inside its plating, under the pauldrons.)
-            place(v.arms[i][0], upper, !me && !max);
-            place(v.arms[i][1], fore, !me);
+            let [upper, fore] = crate::rig::arm(prop, &chest, side, &hands[i]);
+            // (A MAX with no suit to draw: its upper arms as ever.)
+            place(v.arms[i][0], upper, !me && !suit);
+            place(v.arms[i][1], fore, !me && !suit);
+            if let Some(m) = &v.max {
+                place(m.arms[i][0], upper, !me && suit);
+                place(m.arms[i][1], fore, !me && suit);
+                // The pauldron rides the shoulder, turning part of the way with the arm (the
+                // left one is the right one turned half round).
+                let turn = chest.rotation.slerp(upper.rotation, 0.35);
+                let flip = if side < 0.0 {
+                    Quat::from_rotation_y(std::f32::consts::PI)
+                } else {
+                    Quat::IDENTITY
+                };
+                let at = Transform::from_translation(upper.translation).with_rotation(turn * flip);
+                place(m.pauldrons[i], at, !me && suit);
+            }
         }
         if real.delta_secs() > 0.0 {
             let legs = v
                 .gait
-                .update(real.delta_secs(), feet, chest.translation, yaw);
-            place(v.pelvis, legs.pelvis, !me || vr);
+                .update(prop, real.delta_secs(), feet, chest.translation, yaw);
+            let lower = !me || vr;
+            place(v.pelvis, legs.pelvis, lower && !suit);
             for i in 0..2 {
-                place(v.legs[i][0], legs.thigh[i], !me || vr);
-                place(v.legs[i][1], legs.shin[i], !me || vr);
-                place(v.legs[i][2], legs.boot[i], !me || vr);
+                place(v.legs[i][0], legs.thigh[i], lower && !suit);
+                place(v.legs[i][1], legs.shin[i], lower && !suit);
+                place(v.legs[i][2], legs.boot[i], lower && !suit);
+            }
+            if let Some(m) = &v.max {
+                place(m.pelvis, legs.pelvis, lower && suit);
+                for i in 0..2 {
+                    place(m.legs[i][0], legs.thigh[i], lower && suit);
+                    place(m.legs[i][1], legs.shin[i], lower && suit);
+                    place(m.legs[i][2], legs.boot[i], lower && suit);
+                }
             }
             if let Some(model) = models.heads.get(v.animal).and_then(|h| h.tail.as_ref()) {
                 let pelvis = Transform::from_translation(feet + legs.pelvis.translation)
@@ -600,13 +759,46 @@ fn sync_players(
                 for (&e, pose) in v.tail.iter().zip(&poses) {
                     let t = Transform::from_translation(pose.translation - feet)
                         .with_rotation(pose.rotation);
-                    place(e, t, !me || vr);
+                    place(e, t, (!me || vr) && !suit);
                 }
             }
         }
-        // The gun in the gun hand (world).
-        for &(w, e) in &v.guns {
-            set_vis(&mut vis, e, w == weapon);
+        // The gun in the gun hand (world): its model spawned when first held, its barrels
+        // turning while it fires.
+        if !v.guns.iter().any(|g| g.weapon == weapon) {
+            let team = Some(v.team);
+            let entity = commands
+                .spawn((Transform::IDENTITY, Visibility::default(), ChildOf(v.gun)))
+                .id();
+            spawn_model(
+                &mut commands,
+                entity,
+                &weapon_model(&models, weapon),
+                &palette,
+                team,
+            );
+            let spins = spawn_spins(&mut commands, entity, &models, &palette, team, weapon);
+            v.guns.push(Gun {
+                weapon,
+                entity,
+                spins,
+            });
+        }
+        let dt = real.delta_secs();
+        let want = if p.has(flags::FIRING) { SPIN_RATE } else { 0.0 };
+        v.spin_rate += (want - v.spin_rate) * (1.0 - (-dt * SPIN_UP).exp());
+        v.spin = (v.spin + v.spin_rate * dt).rem_euclid(std::f32::consts::TAU);
+        for g in &v.guns {
+            set_vis(&mut vis, g.entity, g.weapon == weapon);
+            if g.weapon == weapon {
+                for (k, &e) in g.spins.iter().enumerate() {
+                    if let Ok(mut t) = transforms.get_mut(e) {
+                        // (The two of a pair turn against each other.)
+                        let dir = if k % 2 == 0 { 1.0 } else { -1.0 };
+                        t.rotation = Quat::from_rotation_z(v.spin * dir);
+                    }
+                }
+            }
         }
         if let Ok(mut t) = transforms.get_mut(v.gun) {
             let h = hands[gun_hand];

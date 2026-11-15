@@ -205,6 +205,7 @@ fn holsters(
                     &palette,
                     Some(t),
                 );
+                crate::actors::spawn_spins(&mut commands, slot.gun, &models, &palette, Some(t), w);
             }
         }
         let at = vr.holsters_world[n];
