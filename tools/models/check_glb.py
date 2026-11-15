@@ -552,11 +552,13 @@ PARTS = {
             "ember": (2000, (-0.05, -0.1, -0.42), (0.05, 0.2, 0.25), {2: -0.4}),
             "volt": (2000, (-0.05, -0.1, -0.49), (0.05, 0.2, 0.35), {2: -0.47}),
             "hive": (2000, (-0.06, -0.1, -0.44), (0.06, 0.2, 0.32), {2: -0.42}),
-            "pounder": (2000, (-0.15, -0.1, -0.6), (0.15, 0.35, 0.23), {2: -0.6}),
+            # A MAX's arm guns: a cradle round the suit's hand in place of the grip, the
+            # wrist's ball behind it. The pounder's barrel clusters turn (`pounder_spin`, about
+            # its own axis, set at the `pounder_spin_N` nodes).
+            "pounder": (2000, (-0.16, -0.1, -0.32), (0.16, 0.36, 0.23), {2: -0.31}),
+            "pounder_spin": (2000, (-0.05, -0.05, -0.6), (0.05, 0.05, -0.3), {2: -0.6}),
             "mauler": (2000, (-0.15, -0.1, -0.63), (0.15, 0.33, 0.21), {2: -0.62}),
             "burster": (2000, (-0.12, -0.1, -1.0), (0.12, 0.38, 0.23), {2: -1.0}),
-            # Worn over the avatar's torso, in its frame (top centre, hanging down -Y).
-            "max_shell": (2000, (-0.4, -0.49, -0.22), (0.4, 0.12, 0.31), {1: -0.49}),
         },
         "nodes": {"rifle_muzzle": (0, 0.085, -0.43), "scatter_muzzle": (0, 0.088, -0.38),
                   "lance_muzzle": (0, 0.085, -0.68), "striker_muzzle": (0, 0.15, -0.62),
@@ -565,7 +567,28 @@ PARTS = {
                   "ember_muzzle": (0, 0.085, -0.4), "volt_muzzle": (0, 0.085, -0.47),
                   "hive_muzzle": (0, 0.085, -0.42),
                   "pounder_muzzle": (0, 0.135, -0.6), "mauler_muzzle": (0, 0.14, -0.62),
-                  "burster_muzzle": (0, 0.21, -1.0)},
+                  "burster_muzzle": (0, 0.21, -1.0),
+                  "pounder_spin_0": (-0.085, 0.135, 0), "pounder_spin_1": (0.085, 0.135, 0)},
+    },
+    # The MAX exosuit (max.py): each mesh in the frame of the infantry part it replaces.
+    "max.glb": {
+        "allowed": {"body", "accent", "glow", "glow_white", "halo_white", "flow", "eyes",
+                    "hit_1", "hit_2", "hit_3"} | SURFACES,
+        "max_materials": 12,
+        "required": ("armor", "metal", "accent", "hit_1", "hit_2", "hit_3", "eyes"),
+        "meshes": {
+            "max_torso": (2500, (-0.34, -0.53, -0.26), (0.34, 0.1, 0.36), {1: -0.52}),
+            "max_helmet": (2500, (-0.2, -0.31, -0.15), (0.2, 0.23, 0.25), {}),
+            "max_pauldron": (2500, (-0.11, -0.28, -0.19), (0.21, 0.18, 0.19), {}),
+            "max_upper_arm": (2500, (-0.1, -0.29, -0.1), (0.1, 0.05, 0.11), {1: -0.27}),
+            "max_forearm": (2500, (-0.1, -0.26, -0.11), (0.1, 0.07, 0.12), {1: -0.25}),
+            "max_fist": (2500, (-0.085, -0.085, -0.12), (0.085, 0.085, 0.165), {2: 0.075}),
+            "max_pelvis": (2500, (-0.25, -0.27, -0.18), (0.25, 0.01, 0.17), {}),
+            "max_thigh": (2500, (-0.12, -0.45, -0.12), (0.12, 0.06, 0.12), {1: -0.38}),
+            "max_shin": (2500, (-0.1, -0.4, -0.12), (0.1, 0.03, 0.13), {1: -0.37}),
+            "max_boot": (2500, (-0.1, -0.081, -0.25), (0.1, 0.07, 0.15), {1: -0.08}),
+        },
+        "nodes": {},
     },
 }
 
