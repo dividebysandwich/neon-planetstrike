@@ -1,8 +1,9 @@
 //! The architecture's drawn-only dress: the buildings' facades and the compound walls'
 //! ramparts.
 
-use glam::Vec2;
+use glam::{Vec2, Vec3};
 
+use super::blocks::{ST_HALF, ST_LANE, ST_OUT, ST_WALL, Stairs};
 use super::builder::{Builder, Gap};
 use super::*;
 
@@ -74,6 +75,9 @@ pub(super) struct Dress {
     /// Glazed windows along the ground floor, and pilasters between the bays.
     pub(super) glazed: bool,
     pub(super) bays: bool,
+    /// Its look: 0 pilasters between the bays; 1 plain, a neon band over the ground floor
+    /// and a taller cornice; 2 heavy piers and tall glazing.
+    pub(super) style: u8,
 }
 
 /// The architecture over a building's (or tower's) outer faces: an angled plinth at the foot,
@@ -83,7 +87,8 @@ pub(super) struct Dress {
 pub(super) fn facade(b: &mut Builder, faces: &[Face], d: &Dress) {
     use Finish::{Body, Glass, Trim};
     let yb = d.top - 1.2;
-    let ct = d.top + 1.7;
+    let ct = d.top + if d.style == 1 { 2.1 } else { 1.7 };
+    let pier = if d.style == 2 { 1.7 } else { 1.1 };
     for f in faces {
         let doors: Vec<(f32, f32)> = f.doors.iter().map(|d| (d.0 - 0.5, d.1 + 0.5)).collect();
         // The plinth: a sloped course at the foot, broken by the doorways.
@@ -94,7 +99,7 @@ pub(super) fn facade(b: &mut Builder, faces: &[Face], d: &Dress) {
             Body,
         );
         // Corner piers.
-        for (s, e) in [(0.0, 1.1), (f.len - 1.1, f.len)] {
+        for (s, e) in [(0.0, pier), (f.len - pier, f.len)] {
             b.run(
                 f,
                 s,
@@ -141,7 +146,8 @@ pub(super) fn facade(b: &mut Builder, faces: &[Face], d: &Dress) {
             let s = 2.3 + i as f32 * 7.0;
             bays.push(s);
             if d.glazed && f.free(s - 0.4, s + 3.9, 0.4) {
-                wins.push((s, s + 3.5, 1.5, 3.2, true));
+                let (lo, hi) = if d.style == 2 { (0.9, 3.7) } else { (1.5, 3.2) };
+                wins.push((s, s + 3.5, lo, hi, true));
             } else if d.glazed && f.free(s + 0.6, s + 2.9, 0.3) {
                 // No room for a window: a vent.
                 vent(b, f, s + 0.6, s + 2.9, 0.9);
@@ -203,7 +209,7 @@ pub(super) fn facade(b: &mut Builder, faces: &[Face], d: &Dress) {
             );
         }
         // Pilasters between the bays, their tops sloping out under the cornice.
-        if d.bays {
+        if d.bays && d.style != 1 {
             for &s in &bays {
                 let m = s - 1.75;
                 if m > 2.0 && f.free(m - 0.45, m + 0.45, 0.3) {
@@ -221,6 +227,15 @@ pub(super) fn facade(b: &mut Builder, faces: &[Face], d: &Dress) {
                     );
                 }
             }
+        }
+        if d.style == 1 {
+            // A neon band over the ground floor's windows, broken by the doorways.
+            b.runs(
+                f,
+                &doors,
+                [(-0.02, 4.25), (0.05, 4.25), (0.05, 4.45), (-0.02, 4.45)],
+                Trim,
+            );
         }
         // A string course at every floor above the ground, a neon line under its lip.
         for k in 1..d.storeys {
@@ -421,7 +436,7 @@ pub(super) fn ramparts(b: &mut Builder, half: f32) {
         // The corbel and the fascia over it, up to the parapet's top, a neon line along it.
         b.runs(
             f,
-            &gate,
+            &[],
             [
                 (-0.05, h - 1.6),
                 (0.1, h - 1.6),
@@ -432,7 +447,7 @@ pub(super) fn ramparts(b: &mut Builder, half: f32) {
         );
         b.runs(
             f,
-            &gate,
+            &[],
             [
                 (-0.05, h - 0.4),
                 (0.7, h - 0.4),
@@ -443,7 +458,7 @@ pub(super) fn ramparts(b: &mut Builder, half: f32) {
         );
         b.runs(
             f,
-            &gate,
+            &[],
             [
                 (0.7, h + 0.2),
                 (0.74, h + 0.2),
@@ -451,6 +466,184 @@ pub(super) fn ramparts(b: &mut Builder, half: f32) {
                 (0.7, h + 0.34),
             ],
             Trim,
+        );
+    }
+}
+
+/// A stair tower's dress (in the stairs' frame): piers on its yard-side corners with a neon
+/// riser up each, a lit frame round its door, a band under its roof, glass in its slits.
+pub(super) fn stair_dress(b: &mut Builder, s: &Stairs) {
+    use Finish::{Body, Trim};
+    let len = s.len();
+    let (o, z1) = (ST_OUT, len + ST_WALL);
+    for sx in [-1.0f32, 1.0] {
+        // The corner's pier, and the riser on its yard face.
+        let (x0, x1) = (sx * (o - 0.5), sx * (o + 0.12));
+        b.block(
+            Vec3::new(x0.min(x1), 0.0, z1 - 0.5),
+            Vec3::new(x0.max(x1), s.top - 0.2, z1 + 0.12),
+            Body,
+        );
+        let (x0, x1) = (sx * (o - 0.3), sx * (o - 0.16));
+        b.block(
+            Vec3::new(x0.min(x1), 0.5, z1 + 0.12),
+            Vec3::new(x0.max(x1), s.top - 0.8, z1 + 0.16),
+            Trim,
+        );
+        // A plinth along each side.
+        let (x0, x1) = (sx * o, sx * (o + 0.18));
+        b.block(
+            Vec3::new(x0.min(x1), 0.0, 0.0),
+            Vec3::new(x0.max(x1), 0.6, z1 - 0.5),
+            Body,
+        );
+        // A band round under the roof.
+        let (x0, x1) = (sx * o, sx * (o + 0.05));
+        b.block(
+            Vec3::new(x0.min(x1), s.top - 0.5, 0.0),
+            Vec3::new(x0.max(x1), s.top - 0.36, z1),
+            Trim,
+        );
+    }
+    b.block(
+        Vec3::new(-o, s.top - 0.5, z1),
+        Vec3::new(o, s.top - 0.36, z1 + 0.05),
+        Trim,
+    );
+    // The door (in line with the left lane): jambs, a hood, a lit strip under it.
+    let (d0, d1, dh) = (-ST_HALF, -ST_HALF + ST_LANE, 2.6);
+    for (x0, x1) in [(d0 - 0.3, d0), (d1, d1 + 0.3)] {
+        b.block(
+            Vec3::new(x0, 0.0, z1),
+            Vec3::new(x1, dh + 0.25, z1 + 0.2),
+            Body,
+        );
+    }
+    b.block(
+        Vec3::new(d0 - 0.45, dh, z1),
+        Vec3::new(d1 + 0.45, dh + 0.4, z1 + 0.5),
+        Body,
+    );
+    b.block(
+        Vec3::new(d0, dh - 0.07, z1 + 0.3),
+        Vec3::new(d1, dh, z1 + 0.46),
+        Trim,
+    );
+    // A level marker: short strips up the yard face beside the door.
+    for k in 0..3 {
+        let y = 4.0 + k as f32 * 3.2;
+        b.block(
+            Vec3::new(0.5, y, z1),
+            Vec3::new(2.0, y + 0.1, z1 + 0.05),
+            Trim,
+        );
+    }
+}
+
+/// A bastion's dress (on the back right corner): a battered skirt round its foot, a corbel and
+/// fascia under its parapet as the walls have, neon bands.
+pub(super) fn bastion_dress(b: &mut Builder, half: f32) {
+    use Finish::{Body, Trim};
+    let (a, e) = (half - BASTION_IN, half + BASTION_OUT);
+    let h = WALL_H;
+    let len = e - a;
+    for (at, u, out) in [
+        (Vec2::new(e, a), Vec2::Y, Vec2::X),
+        (Vec2::new(a, e), Vec2::X, Vec2::Y),
+    ] {
+        let f = Face {
+            a: at,
+            u,
+            out,
+            len,
+            doors: Vec::new(),
+            windows: Vec::new(),
+            clear: Vec::new(),
+        };
+        // (Only out past the walls' faces: the rest is inside the walls.)
+        let s0 = BASTION_IN + 0.02;
+        b.run(
+            &f,
+            s0,
+            len,
+            [(-0.05, -1.0), (1.5, -1.0), (0.25, 4.5), (-0.05, 4.5)],
+            Body,
+        );
+        b.run(
+            &f,
+            s0,
+            len,
+            [
+                (-0.05, h - 1.6),
+                (0.1, h - 1.6),
+                (0.7, h - 0.4),
+                (-0.05, h - 0.4),
+            ],
+            Body,
+        );
+        b.run(
+            &f,
+            s0,
+            len,
+            [
+                (-0.05, h - 0.4),
+                (0.7, h - 0.4),
+                (0.7, h + 1.35),
+                (-0.05, h + 1.35),
+            ],
+            Body,
+        );
+        b.run(
+            &f,
+            s0,
+            len,
+            [
+                (0.7, h + 0.2),
+                (0.74, h + 0.2),
+                (0.74, h + 0.34),
+                (0.7, h + 0.34),
+            ],
+            Trim,
+        );
+        for y in [5.4, 8.2] {
+            b.run(
+                &f,
+                s0,
+                len,
+                [(-0.02, y), (0.05, y), (0.05, y + 0.16), (-0.02, y + 0.16)],
+                Trim,
+            );
+        }
+        // A pier up the outer corner's side, capped.
+        b.run(
+            &f,
+            len - 1.6,
+            len,
+            [(-0.05, 4.5), (0.45, 4.5), (0.45, h - 1.6), (-0.05, h - 1.6)],
+            Body,
+        );
+    }
+}
+
+/// The gallery over a gateway (in the wall's frame; its canopy `gx` either way, at `gy`): lit
+/// strips under the canopy's edges, a sign bar over the gateway outside.
+pub(super) fn gallery_dress(b: &mut Builder, gx: f32, gy: f32) {
+    use Finish::{Body, Trim};
+    for (z0, z1) in [(-WALL_T - 0.32, -WALL_T - 0.26), (0.26, 0.32)] {
+        b.block(
+            Vec3::new(-gx, gy - 0.14, z0),
+            Vec3::new(gx, gy - 0.02, z1),
+            Trim,
+        );
+    }
+    // The canopy's ribs across the walkway.
+    let n = 5;
+    for k in 0..n {
+        let x = -gx + 1.0 + k as f32 * (2.0 * gx - 2.0) / (n - 1) as f32;
+        b.block(
+            Vec3::new(x - 0.12, gy - 0.3, -WALL_T - 0.3),
+            Vec3::new(x + 0.12, gy, 0.3),
+            Body,
         );
     }
 }

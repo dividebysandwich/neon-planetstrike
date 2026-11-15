@@ -2328,7 +2328,7 @@ fn destination(
             if (c - pos).length() < layout.half * 0.8 {
                 None
             } else {
-                Some(c + Vec3::new(0.0, 0.0, -layout.half * 0.5))
+                Some(layout.rally)
             }
         }
         Goal::Go(p) => ((p - pos).length() > 30.0).then_some(p),

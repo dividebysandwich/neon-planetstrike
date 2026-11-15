@@ -2437,8 +2437,14 @@ impl ContinentSim {
         if tr.occupant == Some(self.players[pi].id) {
             tr.occupant = None;
         }
-        let back = glam::Quat::from_rotation_y(tr.yaw) * Vec3::Z * 2.4;
-        let mut at = tr.pos + back;
+        // (Where the base's plan has its gunner stand: on the walkway beside its pillar, not
+        // wherever is behind the way it happens to be turned.)
+        let stand = self.map.bases[tr.base as usize]
+            .turret_stands
+            .get(tr.index as usize)
+            .copied();
+        let mut at =
+            stand.unwrap_or_else(|| tr.pos + glam::Quat::from_rotation_y(tr.yaw) * Vec3::Z * 2.4);
         at.y = self.world.ground(at.x, at.z, at.y + 1.5).unwrap_or(at.y);
         let p = &mut self.players[pi];
         p.body = Body::at(at);

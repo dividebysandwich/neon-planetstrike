@@ -2,6 +2,7 @@
 
 use glam::{Vec2, Vec3};
 
+use crate::base::blocks::{rail, turret};
 use crate::base::builder::{Builder, Gap, door};
 use crate::base::facade::{Dress, Face, facade, vent};
 use crate::base::*;
@@ -50,6 +51,7 @@ pub(in crate::base) fn tower(b: &mut Builder) {
             storeys: 3,
             glazed: false,
             bays: false,
+            style: 0,
         },
     );
     // The blank sides: a vent low down and a conduit up to the cornice.
@@ -88,10 +90,15 @@ pub(in crate::base) fn tower(b: &mut Builder) {
     ] {
         b.boxed(min, max, Style::Floor);
     }
-    // Stairwells: over each ramp, ending where the ramp reaches the floor above.
-    let left = (-h, -7.0, -h + RAMP_W + 0.5, 4.0);
-    let right = (h - RAMP_W - 0.5, -4.0, h, 7.0);
-    let down = (h - RAMP_W - 0.5, -6.0, h, 6.0);
+    // The stairs: a ramp up the left wall from the ground floor, one up the right from the
+    // first, one up the left again onto the roof; each walled off from its floor, the floor
+    // above open over it and railed, the roof's under a head house.
+    let (lx0, lx1) = (-h + T / 2.0, -h + T / 2.0 + RAMP_W);
+    let (rx0, rx1) = (h - T / 2.0 - RAMP_W, h - T / 2.0);
+    let r = top + 0.6;
+    let left = (-h - T / 2.0, -6.0, lx1, 4.0);
+    let right = (rx0, -4.0, h + T / 2.0, 6.0);
+    let down = (rx0, -5.0, h + T / 2.0, 5.0);
     // The ground floor over the bunker (the stairwell down on the right).
     b.slab((-h, -h, h, h), 0.02, &[down], Style::Floor);
     // Floors 1 and 2 and the roof, each with its stairwell.
@@ -99,12 +106,10 @@ pub(in crate::base) fn tower(b: &mut Builder) {
     b.slab((-h, -h, h, h), STOREY * 2.0, &[right], Style::Floor);
     b.slab(
         (-h - T / 2.0, -h - T / 2.0, h + T / 2.0, h + T / 2.0),
-        top + 0.6,
+        r,
         &[left],
         Style::Roof,
     );
-    let (lx0, lx1) = (-h + T / 2.0, -h + T / 2.0 + RAMP_W);
-    let (rx0, rx1) = (h - T / 2.0 - RAMP_W, h - T / 2.0);
     b.ramp(Vec3::new(lx0, 0.0, -6.0), Vec3::new(lx1, STOREY, 4.0), 0);
     b.ramp(
         Vec3::new(rx0, STOREY, -4.0),
@@ -113,11 +118,76 @@ pub(in crate::base) fn tower(b: &mut Builder) {
     );
     b.ramp(
         Vec3::new(lx0, STOREY * 2.0, -6.0),
-        Vec3::new(lx1, top + 0.6, 4.0),
+        Vec3::new(lx1, r, 4.0),
         0,
     );
-    // Roof parapet, two turrets on its corners.
-    let r = top + 0.6;
+    let d = -STOREY;
+    b.ramp(Vec3::new(rx0, d, -5.0), Vec3::new(rx1, 0.0, 5.0), 2);
+    // (Each stair: its inner side's x and which way is in, its foot's and head's z, the
+    // floors it joins.)
+    let pw = 0.3;
+    for (x, sx, foot, head, y0, y1) in [
+        (lx1, 1.0f32, -6.0f32, 4.0f32, 0.0f32, STOREY),
+        (rx0, -1.0, 6.0, -4.0, STOREY, STOREY * 2.0),
+        (lx1, 1.0, -6.0, 4.0, STOREY * 2.0, r),
+        (rx0, -1.0, 5.0, -5.0, d, 0.02),
+    ] {
+        let (z0, z1) = (foot.min(head), foot.max(head));
+        let (x0, x1) = (x.min(x + sx * pw), x.max(x + sx * pw));
+        // The wall along its open side, up to the floor above.
+        let roofed = y1 == r;
+        let wall_top = if roofed { y1 + 2.6 } else { y1 - SLAB };
+        b.boxed(
+            Vec3::new(x0, y0, z0),
+            Vec3::new(x1, wall_top, z1),
+            Style::Stairwell,
+        );
+        // Across the foot's end of the stairwell above: a wall on the roof, else a railing
+        // (and one along the well's side, over the wall).
+        let fz = if foot < head {
+            (z0 - pw, z0)
+        } else {
+            (z1, z1 + pw)
+        };
+        let (wx0, wx1) = if sx > 0.0 {
+            (-h - T / 2.0, x1)
+        } else {
+            (x0, h + T / 2.0)
+        };
+        if roofed {
+            b.boxed(
+                Vec3::new(wx0, y1, fz.0),
+                Vec3::new(wx1, wall_top, fz.1),
+                Style::Stairwell,
+            );
+            // The head house's outer wall (on the parapet's line) and its roof.
+            let ox = if sx > 0.0 { -h } else { h };
+            b.boxed(
+                Vec3::new(ox - T / 2.0, y1, z0 - pw),
+                Vec3::new(ox + T / 2.0, wall_top, z1),
+                Style::Stairwell,
+            );
+            b.boxed(
+                Vec3::new(wx0 - 0.2, wall_top, z0 - pw - 0.2),
+                Vec3::new(wx1 + 0.2, wall_top + 0.3, z1 + 0.6),
+                Style::Canopy,
+            );
+        } else {
+            rail(b, (x0, z0, x1, z1), y1);
+            let (ix0, ix1) = if sx > 0.0 {
+                (-h + T / 2.0, x1)
+            } else {
+                (x0, h - T / 2.0)
+            };
+            let fr = if foot < head {
+                (z0 - RAIL_T, z0)
+            } else {
+                (z1, z1 + RAIL_T)
+            };
+            rail(b, (ix0, fr.0, ix1, fr.1), y1);
+        }
+    }
+    // Roof parapet, two turrets by its corners.
     for (a, e) in [((-h, -h), (h, -h)), ((-h, h), (h, h))] {
         b.wall(
             Vec2::new(a.0, a.1),
@@ -140,10 +210,8 @@ pub(in crate::base) fn tower(b: &mut Builder) {
             Style::Parapet,
         );
     }
-    for (x, z) in [(h - 2.5, -h + 2.5), (-h + 2.5, h - 2.5)] {
-        let p = b.p(x, r + TURRET_RISE, z);
-        b.out.turrets.push(p);
-    }
+    turret(b, (h - 2.5, r, -h + 2.5), (h - 4.4, -h + 3.4));
+    turret(b, (-2.5, r, h - 2.5), (-0.9, h - 4.1));
     // The console: the top floor, by the far wall.
     let y2 = STOREY * 2.0;
     let at = b.p(0.0, y2, 4.5);
@@ -153,8 +221,7 @@ pub(in crate::base) fn tower(b: &mut Builder) {
     b.out.styles.push(Style::Pillar);
     b.decor(-4.0, y2, 6.5, Vec3::new(2.0, 1.0, 1.0));
     b.decor(3.0, STOREY, -6.5, Vec3::new(1.5, 1.5, 1.5));
-    // The bunker: walls, floor, the ramp down, a forcefield at its foot.
-    let d = -STOREY;
+    // The bunker: walls, floor, a forcefield at the foot of the ramp down.
     b.slab((-h, -h, h, h), d, &[], Style::Floor);
     for (a, e) in [((-h, -h), (h, -h)), ((-h, h), (h, h))] {
         b.wall(
@@ -178,7 +245,6 @@ pub(in crate::base) fn tower(b: &mut Builder) {
             Style::Interior,
         );
     }
-    b.ramp(Vec3::new(rx0, d, -6.0), Vec3::new(rx1, 0.0, 5.0), 2);
     let f0 = b.p(rx0, d, 5.2);
     let f1 = b.p(rx1, d + 3.0, 5.5);
     b.out.shields.push(Shield {
@@ -193,13 +259,7 @@ pub(in crate::base) fn tower(b: &mut Builder) {
         b.out.spawns.push((at, yaw));
     }
     b.terminal(TerminalKind::Equipment, -h + 1.0, d, 5.5, -r90);
-    b.terminal(
-        TerminalKind::Medical,
-        -h + 4.0,
-        d,
-        h - 1.0,
-        std::f32::consts::PI,
-    );
+    b.terminal(TerminalKind::Medical, -h + 4.0, d, h - 1.0, 0.0);
     b.lamp(0.0, -0.8, 0.0);
     b.lamp(0.0, STOREY - 0.6, 0.0);
     b.lamp(0.0, STOREY * 2.0 - 0.6, 0.0);
@@ -217,6 +277,7 @@ pub(in crate::base) fn tower(b: &mut Builder) {
     let a = b.p(-h, d, -h);
     let e = b.p(h, top, h);
     b.out.building = (a.min(e), a.max(e));
+    b.out.interiors.push((a.min(e), a.max(e)));
     // Bots: in through the front door, up the ramps to the console; out of the bunker.
     let ramp_l = (lx0 + RAMP_W / 2.0, 0.0);
     let rr = rx0 + RAMP_W / 2.0;
@@ -244,4 +305,5 @@ pub(in crate::base) fn tower(b: &mut Builder) {
     b.mark("spawn", out[0]);
     b.out.to_console = b.walk("gate_out", "console");
     b.out.from_spawn = b.walk("spawn", "gate_out");
+    b.out.rally = b.p(0.0, 0.0, -h - 6.0);
 }

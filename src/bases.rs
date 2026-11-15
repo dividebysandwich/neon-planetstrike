@@ -424,6 +424,10 @@ fn structure(layout: &BaseLayout, alien: bool) -> ([MeshData; 3], MeshData, Mesh
     let mut glass = MeshData::default();
     let mut trim = MeshData::default();
     for (c, style) in layout.colliders.iter().zip(&layout.styles) {
+        // (The turrets' pillars are drawn with the turrets.)
+        if matches!(style, Style::Mount) {
+            continue;
+        }
         let k = match style {
             Style::Floor | Style::Ramp | Style::Interior => 1,
             Style::Decor => 2,

@@ -185,7 +185,8 @@ impl Builder {
         self.out.styles.push(Style::Ramp);
     }
 
-    /// A wall from `a` to `b` (along x or z), `t` thick, `y0`..`y1` high, with openings.
+    /// A wall from `a` to `b` (along x or z), `t` thick, `y0`..`y1` high, with openings (apart
+    /// along it, or one above another over the same stretch).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn wall(
         &mut self,
@@ -200,19 +201,28 @@ impl Builder {
         let along_x = (b.y - a.y).abs() < 1e-3;
         let len = if along_x { b.x - a.x } else { b.y - a.y };
         let mut cuts = gaps.to_vec();
-        cuts.sort_by(|x, y| x.off.total_cmp(&y.off));
+        cuts.sort_by(|x, y| x.off.total_cmp(&y.off).then(x.lo.total_cmp(&y.lo)));
         // Pieces: (start, end, bottom, top) along the wall.
         let mut pieces: Vec<(f32, f32, f32, f32)> = Vec::new();
         let mut at = 0.0;
-        for g in &cuts {
+        let mut i = 0;
+        while i < cuts.len() {
+            let g = cuts[i];
             if g.off > at {
                 pieces.push((at, g.off, y0, y1));
             }
-            if g.lo > 0.0 {
-                pieces.push((g.off, g.off + g.w, y0, y0 + g.lo));
+            // (Openings one above another over the same stretch: the wall between them.)
+            let mut floor = y0;
+            while i < cuts.len() && (cuts[i].off - g.off).abs() < 1e-3 {
+                let c = cuts[i];
+                if y0 + c.lo > floor + 1e-3 {
+                    pieces.push((g.off, g.off + g.w, floor, y0 + c.lo));
+                }
+                floor = y0 + c.hi;
+                i += 1;
             }
-            if y0 + g.hi < y1 {
-                pieces.push((g.off, g.off + g.w, y0 + g.hi, y1));
+            if floor < y1 {
+                pieces.push((g.off, g.off + g.w, floor, y1));
             }
             at = g.off + g.w;
         }
@@ -327,6 +337,24 @@ impl Builder {
             let b = f.at(e + if me { o } else { 0.0 }, o);
             pts[k] = self.p(a.x, y, a.y);
             pts[k + 4] = self.p(b.x, y, b.y);
+        }
+        self.out.details.push(Detail { pts, finish });
+    }
+
+    /// A drawn-only box (the frame's `min`..`max`).
+    pub(super) fn block(&mut self, min: Vec3, max: Vec3, finish: Finish) {
+        let mut pts = [Vec3::ZERO; 8];
+        for (k, (x, y)) in [
+            (min.x, min.y),
+            (max.x, min.y),
+            (max.x, max.y),
+            (min.x, max.y),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            pts[k] = self.p(x, y, min.z);
+            pts[k + 4] = self.p(x, y, max.z);
         }
         self.out.details.push(Detail { pts, finish });
     }

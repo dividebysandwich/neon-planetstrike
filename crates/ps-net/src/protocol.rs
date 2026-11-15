@@ -7,7 +7,7 @@ use ps_sim::{ContinentId, PlayerCmd, PlayerId, Request, SimEvent, Team, WorldPar
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL: u16 = 13;
+pub const PROTOCOL: u16 = 14;
 /// Seconds a whole day takes.
 pub const DAY_LENGTH: f32 = 1800.0;
 pub const DEFAULT_PORT: u16 = 27430;

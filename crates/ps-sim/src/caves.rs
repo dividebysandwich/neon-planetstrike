@@ -322,15 +322,8 @@ pub fn lines(
         if l.kind == BaseKind::Tower {
             continue;
         }
-        let (lo, hi) = l.building;
-        // The roof's top (its slab over the top storey) and spots on it near its corners.
-        let roof = hi.y + 0.6;
-        let corners = [
-            Vec3::new(lo.x + 2.5, roof, lo.z + 2.5),
-            Vec3::new(hi.x - 2.5, roof, lo.z + 2.5),
-            Vec3::new(hi.x - 2.5, roof, hi.z - 2.5),
-            Vec3::new(lo.x + 2.5, roof, hi.z - 2.5),
-        ];
+        // Spots on the roof near its corners (clear of the stairs' head house).
+        let corners = &l.zip_anchors;
         let p = &pads[b];
         let mut best: Option<Zipline> = None;
         'search: for a in line_ways(def, t, b, l.center.y) {
@@ -345,7 +338,7 @@ pub fn lines(
                 continue;
             }
             // From the corner of the roof facing it.
-            let mut order = corners;
+            let mut order = corners.clone();
             order.sort_by(|x, y| {
                 let d = |c: &Vec3| Vec2::new(c.x - rim2.x, c.z - rim2.y).length();
                 d(x).total_cmp(&d(y))
