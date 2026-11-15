@@ -421,15 +421,17 @@ PARTS = {
     "vehicles.glb": {
         "allowed": {"body", "accent", "glow", "glow_white", "halo_white", "flow", "tread"} | SURFACES,
         # Each material of a mesh is an entity and a draw call of its own.
-        "max_materials": 9,
-        "required": ("body", "accent", "glow", "glow_white", "halo_white", "flow"),
+        "max_materials": 10,
+        "required": ("body", "accent", "glow", "glow_white", "flow"),
         "meshes": {
             "light_tank_hull": (4000,) + _hull(1.6, 1.25, 2.8) + ({1: 0.0},),
-            "light_tank_turret": (4000, (-1.1, -0.3, -1.4), (1.1, 0.9, 1.4), {}),
+            "light_tank_turret": (4000, (-1.25, -0.3, -1.4), (1.25, 1.55, 1.6), {}),
+            "light_tank_wheel": (4000, (-0.25, -0.32, -0.32), (0.25, 0.32, 0.32), {1: -0.31}),
+            "light_tank_sprocket": (4000, (-0.25, -0.32, -0.32), (0.25, 0.32, 0.32), {1: -0.3}),
             "light_tank_barrel": (4000, (-0.5, -0.4, -3.2), (0.5, 0.4, 0.0), {2: -3.2}),
             "light_aaa_hull": (4000,) + _hull(1.6, 1.25, 2.8) + ({1: 0.0},),
-            "light_aaa_turret": (4000, (-1.0, -0.3, -1.0), (1.0, 0.8, 1.0), {}),
-            "light_aaa_barrel": (4000, (-0.6, -0.4, -2.4), (0.6, 0.4, 0.5), {2: -2.4}),
+            "light_aaa_turret": (4000, (-1.0, -0.3, -1.0), (1.0, 1.05, 1.0), {}),
+            "light_aaa_barrel": (4000, (-0.75, -0.4, -2.4), (0.75, 0.4, 0.5), {2: -2.4}),
             "heavy_tank_hull": (4000,) + _hull(2.2, 1.5, 3.8) + ({1: 0.0},),
             "heavy_tank_turret": (4000, (-1.7, -0.25, -2.0), (1.7, 0.8, 2.0), {}),
             "heavy_tank_barrel": (4000, (-0.6, -0.4, -4.4), (0.6, 0.4, 0.0), {2: -4.4}),
